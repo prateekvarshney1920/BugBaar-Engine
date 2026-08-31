@@ -1,0 +1,26 @@
+{
+  "$comment": "Type-aware linting needs every file in a program, including tests and the dashboard, which the build tsconfigs deliberately exclude.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": [
+    "tools/src/**/*.ts",
+    "agents/src/**/*.ts",
+    "rag/src/**/*.ts",
+    "workflows/src/**/*.ts",
+    "persistence/src/**/*.ts",
+    "queue/src/**/*.ts",
+    "api/src/**/*.ts",
+    "backend/src/**/*.ts",
+    "frontend/src/**/*.ts",
+    "frontend/src/**/*.tsx",
+    "frontend/vite.config.ts"
+  ]
+}
