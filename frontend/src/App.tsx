@@ -166,7 +166,7 @@ export function App() {
           <span className="crumb">/ {active.section}</span>
 
           <div style={{ marginLeft: "auto" }} className="inline">
-            <div className="field" style={{ width: 190 }}>
+            <div className="field topbar-key">
               <input
                 id="api-key"
                 type="password"
