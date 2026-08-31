@@ -257,7 +257,19 @@ describe("MongoWorkflowRunStore", () => {
     const store = new MongoWorkflowRunStore(layer.connection.db(), { collectionName: "recent_test" });
     await store.ensureIndexes();
 
-    for (const id of ["r1", "r2", "r3"]) await store.record(run(id));
+    /*
+     * record() stamps recordedAt from the clock, and three inserts can land in
+     * the same millisecond. recent() sorts on that field alone, so a tie falls
+     * back to natural order — ascending — and inverts the result. The runs get
+     * explicit, distinct stamps so the ordering under test is the real one.
+     */
+    const collection = layer.connection.db().collection("recent_test");
+    const base = Date.now();
+
+    for (const [index, id] of ["r1", "r2", "r3"].entries()) {
+      await store.record(run(id));
+      await collection.updateOne({ _id: id }, { $set: { recordedAt: new Date(base + index * 1000) } });
+    }
 
     const recent = await store.recent(2);
     assert.equal(recent.length, 2);
