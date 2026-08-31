@@ -43,6 +43,45 @@ export interface RunAgentResponse {
   durationMs: number;
 }
 
+/** One tool invocation inside a stored agent-run trace. */
+export interface AgentRunTraceToolCall {
+  name: string;
+  ok: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+export interface AgentRunTraceStepSummary {
+  index: number;
+  thought: string;
+  tools: AgentRunTraceToolCall[];
+}
+
+/**
+ * A durable record of one agent execution.
+ *
+ * `running` is a real state, not a transient one: a run that never reported
+ * back keeps it, which is what makes a hung agent visible after the fact.
+ */
+export interface AgentRunSummary {
+  runId: string;
+  agentId: string;
+  sessionId?: string;
+  input: string;
+  status: "running" | "completed" | "failed";
+  stoppedBecause?: string;
+  output?: string;
+  steps: AgentRunTraceStepSummary[];
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface AgentRunListResponse {
+  runs: AgentRunSummary[];
+}
+
 export interface IngestRequest {
   documents: { id: string; text: string; metadata?: Record<string, unknown> }[];
 }

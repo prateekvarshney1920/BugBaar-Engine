@@ -85,6 +85,37 @@ export function agentRoutes(container: Container): Router {
     }),
   );
 
+  /*
+   * Registered before "/agents/:id" on purpose.
+   *
+   * Express matches in registration order, so declaring these later would let
+   * "/agents/:id" capture "runs" as an agent id and answer 404 for every run
+   * lookup. There is a test asserting this ordering.
+   */
+  router.get(
+    "/agents/runs",
+    asyncHandler(async (req, res) => {
+      const limit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+      const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+
+      const runs = await container.agentRunStore.recent(Number.isFinite(limit) ? limit : 50, {
+        ...(agentId === undefined ? {} : { agentId }),
+      });
+
+      res.json({ runs });
+    }),
+  );
+
+  router.get(
+    "/agents/runs/:runId",
+    asyncHandler(async (req, res) => {
+      const runId = pathParam(req, "runId");
+      const run = await container.agentRunStore.get(runId);
+      if (!run) throw new HttpError(404, "run_not_found", `Agent run "${runId}" does not exist`);
+      res.json(run);
+    }),
+  );
+
   router.get(
     "/agents/:id",
     asyncHandler(async (req, res) => {
@@ -117,14 +148,32 @@ export function agentRoutes(container: Container): Router {
       const sessionId = optionalString(body, "sessionId", 128);
 
       container.metrics.agentRunsActive.inc();
+
+      // The runId only exists once the loop starts, so the run record is
+      // opened from the event stream rather than before the call.
+      const onEvent = container.agentRunRecorder({ sessionId });
+      let runId = "";
+
       let result;
       try {
-        result = await agent.run(input, { sessionId });
+        result = await agent.run(input, {
+          sessionId,
+          onEvent: (event) => {
+            if (event.type === "run-start") runId = event.runId;
+            onEvent(event);
+          },
+        });
+      } catch (error) {
+        // A run that threw still started, and the record of why it stopped is
+        // the most useful thing it can leave behind.
+        if (runId) await container.failAgentRun(runId, error instanceof Error ? error.message : String(error));
+        throw error;
       } finally {
         container.metrics.agentRunsActive.dec();
       }
 
       container.observeAgentRun(result);
+      await container.completeAgentRun(result);
       await container.events.emit("agent.run.completed", { agentId: agent.id, runId: result.runId });
 
       const response: RunAgentResponse = {

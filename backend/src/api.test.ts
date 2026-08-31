@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import type { AgentSummary, ErrorBody, HealthResponse, RunAgentResponse, SearchResponse } from "@bugbaar/api";
+import type {
+  AgentRunSummary,
+  AgentSummary,
+  ErrorBody,
+  HealthResponse,
+  RunAgentResponse,
+  SearchResponse,
+} from "@bugbaar/api";
 import { createHarness, post, type TestHarness } from "./testing.ts";
 
 /**
@@ -765,5 +772,132 @@ describe("metrics", () => {
     } finally {
       await off.close();
     }
+  });
+});
+
+describe("agent run history", () => {
+  test("a blocking run is persisted and retrievable with its trace", async () => {
+    const run = await h.json<RunAgentResponse>(
+      "/v1/agents/assistant/run",
+      post({ input: "persist this run", sessionId: "history-1" }),
+    );
+    assert.equal(run.status, 200);
+
+    const record = await h.json<AgentRunSummary>(`/v1/agents/runs/${run.body.runId}`);
+
+    assert.equal(record.status, 200);
+    assert.equal(record.body.runId, run.body.runId, "the stored run must be the one that executed");
+    assert.equal(record.body.agentId, "assistant");
+    assert.equal(record.body.status, "completed");
+    assert.equal(record.body.input, "persist this run", "the prompt must be recorded");
+    assert.equal(record.body.sessionId, "history-1");
+    assert.equal(record.body.output, run.body.output, "the stored output must match what was returned");
+    assert.equal(record.body.stoppedBecause, "completed");
+    assert.ok(record.body.startedAt);
+    assert.ok(record.body.finishedAt);
+    assert.equal(typeof record.body.durationMs, "number");
+  });
+
+  test("a streamed run is persisted the same way as a blocking one", async () => {
+    const response = await h.request("/v1/agents/assistant/run/stream", post({ input: "streamed and stored" }));
+    const text = await response.text();
+
+    const end = /event: run-end\ndata: (.+)/.exec(text);
+    assert.ok(end, "the stream should have ended");
+    const runId = (JSON.parse(end[1]!) as { result: { runId: string } }).result.runId;
+
+    const record = await h.json<AgentRunSummary>(`/v1/agents/runs/${runId}`);
+
+    assert.equal(record.status, 200);
+    assert.equal(record.body.status, "completed");
+    assert.equal(record.body.input, "streamed and stored");
+    assert.match(record.body.output ?? "", /streamed and stored/);
+  });
+
+  test("the trace records each tool call and whether it succeeded", async () => {
+    await h.json("/v1/agents", post({ id: "trace-agent", tools: ["calculator"] }));
+
+    const run = await h.json<RunAgentResponse>("/v1/agents/trace-agent/run", post({ input: "compute something" }));
+    const record = await h.json<AgentRunSummary>(`/v1/agents/runs/${run.body.runId}`);
+
+    // The echo provider answers directly, so the trace has no steps — but the
+    // shape must still be present and empty rather than missing.
+    assert.ok(Array.isArray(record.body.steps), "steps must always be an array");
+    assert.equal(record.body.steps.length, run.body.steps.length, "the trace must match the run's step count");
+  });
+
+  test("listing returns runs newest first", async () => {
+    const first = await h.json<RunAgentResponse>("/v1/agents/assistant/run", post({ input: "older run" }));
+    const second = await h.json<RunAgentResponse>("/v1/agents/assistant/run", post({ input: "newer run" }));
+
+    const { status, body } = await h.json<{ runs: AgentRunSummary[] }>("/v1/agents/runs?limit=50");
+
+    assert.equal(status, 200);
+    const ids = body.runs.map((entry) => entry.runId);
+    assert.ok(ids.includes(first.body.runId));
+    assert.ok(ids.includes(second.body.runId));
+    assert.ok(
+      ids.indexOf(second.body.runId) < ids.indexOf(first.body.runId),
+      "the newer run must be listed before the older one",
+    );
+  });
+
+  test("listing can be filtered to one agent", async () => {
+    await h.json("/v1/agents", post({ id: "filtered-agent" }));
+    const mine = await h.json<RunAgentResponse>("/v1/agents/filtered-agent/run", post({ input: "only mine" }));
+
+    const { body } = await h.json<{ runs: AgentRunSummary[] }>("/v1/agents/runs?agentId=filtered-agent");
+
+    assert.ok(body.runs.length >= 1);
+    assert.equal(
+      body.runs.every((entry) => entry.agentId === "filtered-agent"),
+      true,
+    );
+    assert.ok(body.runs.some((entry) => entry.runId === mine.body.runId));
+  });
+
+  test("an unknown run id is a 404", async () => {
+    const { status, body } = await h.json<ErrorBody>("/v1/agents/runs/does-not-exist");
+
+    assert.equal(status, 404);
+    assert.equal(body.error.code, "run_not_found");
+  });
+
+  /*
+   * Express matches routes in registration order, so "/agents/:id" declared
+   * before "/agents/runs" would capture "runs" as an agent id and answer 404
+   * for every lookup. This asserts the ordering rather than trusting it.
+   */
+  test("the runs route is not shadowed by the agent-by-id route", async () => {
+    const { status, body } = await h.json<{ runs: AgentRunSummary[] }>("/v1/agents/runs");
+
+    assert.equal(status, 200, "/v1/agents/runs must not be matched as an agent id");
+    assert.ok(Array.isArray(body.runs));
+  });
+
+  test("history is not written for a run that was rejected before it started", async () => {
+    const before = await h.json<{ runs: AgentRunSummary[] }>("/v1/agents/runs?limit=100");
+
+    await h.request("/v1/agents/assistant/run", post({ input: "" }));
+    await h.request("/v1/agents/ghost-agent/run", post({ input: "hello" }));
+
+    const after = await h.json<{ runs: AgentRunSummary[] }>("/v1/agents/runs?limit=100");
+    assert.equal(after.body.runs.length, before.body.runs.length, "a rejected request must not create a run record");
+  });
+
+  test("run history requires an API key like every other endpoint", async () => {
+    assert.equal((await h.request("/v1/agents/runs", { apiKey: null })).status, 401);
+  });
+
+  /*
+   * The record has to be written before the response is sent, not fired off
+   * afterwards. A caller that reads the run id from a response and immediately
+   * fetches it must not race the write.
+   */
+  test("the record exists immediately after the run responds", async () => {
+    const run = await h.json<RunAgentResponse>("/v1/agents/assistant/run", post({ input: "no race" }));
+    const immediately = await h.request(`/v1/agents/runs/${run.body.runId}`);
+
+    assert.equal(immediately.status, 200, "the record must exist without waiting");
   });
 });

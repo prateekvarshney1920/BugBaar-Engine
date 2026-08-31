@@ -23,6 +23,7 @@ export class Metrics {
   readonly agentRunDuration: Histogram<"agent">;
   readonly agentSteps: Histogram<"agent">;
   readonly agentRunsActive: Gauge<string>;
+  readonly agentRunPersistenceFailures: Counter<"phase">;
 
   readonly toolCalls: Counter<"tool" | "outcome">;
   readonly toolDuration: Histogram<"tool">;
@@ -80,6 +81,13 @@ export class Metrics {
     this.agentRunsActive = new Gauge({
       name: "bugbaar_agent_runs_active",
       help: "Agent runs currently executing.",
+      registers,
+    });
+
+    this.agentRunPersistenceFailures = new Counter({
+      name: "bugbaar_agent_run_persistence_failures_total",
+      help: "Agent run history writes that failed, by lifecycle phase. A run still succeeds when this fires, so without the counter the loss would be invisible.",
+      labelNames: ["phase"],
       registers,
     });
 

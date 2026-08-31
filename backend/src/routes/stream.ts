@@ -39,10 +39,22 @@ export function streamRoutes(container: Container): Router {
       res.on("close", () => abort.abort());
 
       let events = 0;
+      let runId = "";
       container.metrics.agentRunsActive.inc();
 
+      // The same recorder the blocking route uses, so both paths write an
+      // identical record rather than each maintaining its own bookkeeping.
+      const record = container.agentRunRecorder({ sessionId });
+
       try {
-        for await (const event of agent.stream(input, { sessionId, signal: abort.signal })) {
+        for await (const event of agent.stream(input, {
+          sessionId,
+          signal: abort.signal,
+          onEvent: (streamed) => {
+            if (streamed.type === "run-start") runId = streamed.runId;
+            record(streamed);
+          },
+        })) {
           if (res.writableEnded) break;
           send(res, event.type, event);
           events += 1;
@@ -50,11 +62,18 @@ export function streamRoutes(container: Container): Router {
           // Recorded here rather than after the loop: an aborted stream never
           // reaches run-end, and counting only completed runs would quietly
           // hide exactly the runs worth investigating.
-          if (event.type === "run-end") container.observeAgentRun(event.result);
+          if (event.type === "run-end") {
+            container.observeAgentRun(event.result);
+            await container.completeAgentRun(event.result);
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         req.log.error("stream failed", { agentId: id, message });
+
+        // The stream already committed a 200, so this record is the only
+        // durable evidence that the run did not finish.
+        if (runId) await container.failAgentRun(runId, message);
 
         // The response is already committed with a 200, so a failure cannot be
         // signalled by status code. It has to arrive as a final event.

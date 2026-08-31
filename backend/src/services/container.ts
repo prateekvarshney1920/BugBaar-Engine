@@ -2,11 +2,15 @@ import {
   Agent,
   EchoProvider,
   InMemoryAgentRepository,
+  InMemoryAgentRunStore,
   InMemoryStore,
   OpenAiProvider,
   type AgentDefinition,
-  type AgentRunStep,
+  type AgentEvent,
   type AgentRepository,
+  type AgentRunResult,
+  type AgentRunStep,
+  type AgentRunStore,
   type LlmProvider,
   type MemoryStore,
 } from "@bugbaar/agents";
@@ -62,6 +66,7 @@ export class Container {
   #memory: MemoryStore = new InMemoryStore();
   #agentRepository: AgentRepository = new InMemoryAgentRepository();
   #runStore: WorkflowRunStore = new InMemoryRunStore();
+  #agentRunStore: AgentRunStore = new InMemoryAgentRunStore();
   #persistence: PersistenceLayer | null = null;
   #queueLayer: QueueLayer | null = null;
   #jobs: JobQueue;
@@ -105,6 +110,10 @@ export class Container {
 
   get runStore(): WorkflowRunStore {
     return this.#runStore;
+  }
+
+  get agentRunStore(): AgentRunStore {
+    return this.#agentRunStore;
   }
 
   get persistent(): boolean {
@@ -153,6 +162,63 @@ export class Container {
         this.metrics.toolCalls.inc({ tool: tool.name, outcome: tool.ok ? "ok" : "error" });
         this.metrics.toolDuration.observe({ tool: tool.name }, tool.durationMs / 1000);
       }
+    }
+  }
+
+  /**
+   * Returns an event observer that records the run's lifecycle as it happens.
+   *
+   * Handed to `Agent.run()` and `Agent.stream()` alike, so both paths persist
+   * identically rather than each wiring its own bookkeeping.
+   *
+   * The `run-start` write is fire-and-forget: making a caller wait on history
+   * before the model is even asked would add latency to every request for no
+   * benefit, and a lost start record self-heals when the run completes.
+   */
+  agentRunRecorder(context: { sessionId?: string } = {}): (event: AgentEvent) => void {
+    return (event) => {
+      if (event.type !== "run-start") return;
+
+      void this.#persistAgentRun("start", event.runId, () =>
+        this.#agentRunStore.start({
+          runId: event.runId,
+          agentId: event.agentId,
+          input: event.input,
+          ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
+        }),
+      );
+    };
+  }
+
+  /** Records a finished run. Awaited, so the record exists before the response. */
+  async completeAgentRun(result: AgentRunResult): Promise<void> {
+    await this.#persistAgentRun("complete", result.runId, () => this.#agentRunStore.complete(result));
+  }
+
+  /** Records a run that could not finish. */
+  async failAgentRun(runId: string, error: string): Promise<void> {
+    await this.#persistAgentRun("fail", runId, () => this.#agentRunStore.fail(runId, error));
+  }
+
+  /**
+   * Runs a history write without letting it break the run it describes.
+   *
+   * An agent run that produced a real answer must not be turned into a failure
+   * because the audit record could not be written — that trades a working
+   * feature for a broken one. But it must not be silent either, so a failure is
+   * logged at error level and counted, which is how everything else in this
+   * service surfaces a problem.
+   */
+  async #persistAgentRun(phase: string, runId: string, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
+    } catch (error) {
+      this.metrics.agentRunPersistenceFailures.inc({ phase });
+      this.logger.error("could not persist agent run", {
+        phase,
+        runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -212,6 +278,7 @@ export class Container {
       this.#memory = this.#persistence.memory;
       this.#agentRepository = this.#persistence.agents;
       this.#runStore = this.#persistence.runs;
+      this.#agentRunStore = this.#persistence.agentRuns;
     } else {
       this.logger.warn("MONGODB_URI not set — agents, memory, and run history are in-memory and lost on restart");
     }
