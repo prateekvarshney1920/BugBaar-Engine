@@ -8,6 +8,70 @@ Our mission is to make AI infrastructure modular, developer-friendly, and access
 
 ---
 
+# ⚡ Quick Start
+
+```bash
+npm install
+cp .env.example .env
+npm run build
+npm run dev
+```
+
+The engine listens on `http://localhost:4000`. It runs with **zero external
+infrastructure** out of the box — in-memory agent memory, an in-memory vector
+store, and an offline echo LLM provider — so every endpoint works before you
+add a single credential.
+
+```bash
+curl -s -X POST http://localhost:4000/v1/agents/assistant/run   -H 'content-type: application/json'   -H 'x-api-key: dev-local-key'   -d '{"input":"What is 6 times 7?"}'
+```
+
+Point it at a real model by setting `LLM_PROVIDER=openai` and `OPENAI_API_KEY`
+in `.env`, or `LLM_PROVIDER=ollama` for a local one.
+
+To run the dashboard alongside it:
+
+```bash
+npm run dev:frontend   # http://localhost:5173
+```
+
+For the full stack (MongoDB, Redis, Qdrant):
+
+```bash
+docker compose up --build
+```
+
+## 📖 Documentation
+
+| Guide                                              | Contents                                            |
+| -------------------------------------------------- | --------------------------------------------------- |
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Install, first agent, first knowledge base          |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)       | Module boundaries, the agent loop, extension points |
+| [docs/API.md](docs/API.md)                         | Every REST endpoint                                 |
+| [docs/SECURITY.md](docs/SECURITY.md)               | Agent threat model and tool-safety rules            |
+| [frontend/README.md](frontend/README.md)           | The dashboard: views, proxying, build               |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                 | Setup, standards, how to add a tool                 |
+
+## 📦 Implementation Status
+
+| Module                                                                    | Status                                         |
+| ------------------------------------------------------------------------- | ---------------------------------------------- |
+| Agent runtime (loop, memory, tool calling)                                | ✅ Implemented                                 |
+| Tool registry and schema validation                                       | ✅ Implemented                                 |
+| RAG engine (chunking, embeddings, retrieval)                              | ✅ Implemented                                 |
+| Workflow engine (retries, timeouts, events, scheduling)                   | ✅ Implemented                                 |
+| API gateway (auth, rate limiting, REST)                                   | ✅ Implemented                                 |
+| Qdrant vector store                                                       | ✅ Implemented, verified against a live server |
+| MongoDB persistence (agents, memory, run history)                         | ✅ Implemented                                 |
+| BullMQ queue + shared rate limiting                                       | ✅ Implemented                                 |
+| Streaming agent runs (SSE, token by token)                                | ✅ Implemented                                 |
+| Lint, formatting, and API test suite in CI                                | ✅ Implemented                                 |
+| Observability (Prometheus metrics, structured logs)                       | ✅ Implemented                                 |
+| Multi-agent communication                                                 | 🚧 Event bus in place, protocol pending        |
+| Frontend dashboard (agents, playground, knowledge, workflows, monitoring) | ✅ Implemented                                 |
+
+---
+
 # 🤔 Why BugBaar Engine?
 
 Building AI applications today requires stitching together multiple frameworks, APIs, vector databases, and orchestration tools.
@@ -230,6 +294,8 @@ bugbaar-engine
 ├── agents/
 ├── workflows/
 ├── rag/
+├── persistence/
+├── queue/
 ├── tools/
 ├── api/
 ├── frontend/
