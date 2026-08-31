@@ -246,7 +246,7 @@ export function PlaygroundView() {
               }
             >
               <pre className="stream" ref={output} aria-live="polite">
-                {text || (running ? "" : "Run the agent to see its response here.")}
+                {text || (running ? "" : <span className="dim">Run the agent to see its response here.</span>)}
                 {running ? <span className="caret" /> : null}
               </pre>
             </Card>

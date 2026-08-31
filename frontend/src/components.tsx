@@ -125,7 +125,7 @@ export function Metric({
   return (
     <article className="metric rise">
       <div className="metric-top">
-        {icon ? <span className={`metric-icon ${accent}`}>{icon}</span> : null}
+        {icon ? <span className={`metric-icon ${accent === "neutral" ? "" : accent}`.trim()}>{icon}</span> : null}
         {label}
       </div>
       <div className={`metric-value${missing ? " pending" : ""}`}>{missing ? "No data" : value}</div>
@@ -326,6 +326,10 @@ export function formatWhen(iso: string | undefined): string {
 
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return iso;
+
+  // The epoch is not a date anything here was created on — it is the absence of
+  // one, carried by records the engine defines in code rather than stores.
+  if (then === 0) return "unknown";
 
   const seconds = Math.round((Date.now() - then) / 1000);
   if (seconds < 60) return "just now";
