@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+*.log
+.idea/
+.vscode/
+.claude/
+
+# Generated status report, not a source artefact.
+docs/IMPLEMENTATION-PLAN.pdf
