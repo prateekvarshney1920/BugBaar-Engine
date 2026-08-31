@@ -26,7 +26,7 @@
     "dev:frontend": "npm run dev --workspace @bugbaar/frontend",
     "start": "npm run start --workspace @bugbaar/backend",
     "typecheck": "tsc --build --dry",
-    "test": "node --import tsx --test \"tools/src/**/*.test.ts\" \"agents/src/**/*.test.ts\" \"rag/src/**/*.test.ts\" \"workflows/src/**/*.test.ts\" \"persistence/src/**/*.test.ts\" \"queue/src/**/*.test.ts\" \"backend/src/**/*.test.ts\"",
+    "test": "node scripts/run-tests.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

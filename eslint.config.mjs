@@ -82,6 +82,18 @@ export default tseslint.config(
     },
   },
 
+  // Plain JavaScript tooling. Type-aware rules need a file to belong to a
+  // TypeScript program, and these do not — but they should still be linted
+  // rather than ignored, so the type-checked rules are switched off instead.
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ["**/*.mjs", "**/*.cjs", "**/*.js"],
+    languageOptions: {
+      parserOptions: { project: false },
+      globals: { ...globals.node },
+    },
+  },
+
   // The dashboard runs in a browser, not Node.
   {
     files: ["frontend/**/*.{ts,tsx}"],
