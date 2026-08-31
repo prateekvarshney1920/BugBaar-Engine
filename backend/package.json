@@ -1,0 +1,25 @@
+{
+  "name": "@bugbaar/backend",
+  "version": "0.1.0",
+  "description": "BugBaar Engine API gateway: REST surface for agents, workflows, and the knowledge engine.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@bugbaar/agents": "0.1.0",
+    "@bugbaar/api": "0.1.0",
+    "@bugbaar/persistence": "0.1.0",
+    "@bugbaar/queue": "0.1.0",
+    "@bugbaar/rag": "0.1.0",
+    "@bugbaar/tools": "0.1.0",
+    "@bugbaar/workflows": "0.1.0",
+    "@prometheus-io/client": "^0.16.1",
+    "express": "^5.1.0"
+  }
+}
