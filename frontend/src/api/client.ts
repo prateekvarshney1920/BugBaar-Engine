@@ -1,4 +1,5 @@
 import type {
+  AgentRunSummary,
   AgentSummary,
   CreateAgentRequest,
   HealthResponse,
@@ -85,6 +86,17 @@ export const api = {
       ...(sessionId ? { sessionId } : {}),
     }),
 
+  /** Agent run history, added to the backend in the persistence work. */
+  agentRuns: (options: { limit?: number; agentId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.limit) query.set("limit", String(options.limit));
+    if (options.agentId) query.set("agentId", options.agentId);
+
+    const suffix = query.toString();
+    return request<{ runs: AgentRunSummary[] }>(`/v1/agents/runs${suffix ? `?${suffix}` : ""}`);
+  },
+  agentRun: (runId: string) => request<AgentRunSummary>(`/v1/agents/runs/${encodeURIComponent(runId)}`),
+
   listTools: () => request<{ tools: { name: string; description: string; parameters: unknown }[] }>("/v1/tools"),
 
   ingest: (documents: { id: string; text: string }[]) =>
@@ -121,6 +133,19 @@ export const api = {
     );
   },
   workflowRuns: () => request<{ runs: WorkflowRun[] }>("/v1/workflows/runs"),
+
+  /**
+   * Prometheus exposition, parsed client-side.
+   *
+   * The endpoint is unauthenticated and returns text rather than JSON, so it
+   * is fetched directly instead of through `request`. Everything the
+   * monitoring page shows comes from here — no figure is synthesised.
+   */
+  metrics: async (): Promise<PrometheusSample[]> => {
+    const response = await fetch("/metrics");
+    if (!response.ok) throw new Error(`Metrics unavailable (${response.status})`);
+    return parsePrometheus(await response.text());
+  },
 };
 
 /** Mirrors the engine's AgentEvent union. */
@@ -213,4 +238,56 @@ export interface WorkflowRun {
   error?: string;
   startedAt: string;
   durationMs: number;
+}
+
+export interface PrometheusSample {
+  name: string;
+  labels: Record<string, string>;
+  value: number;
+}
+
+/**
+ * Minimal Prometheus text parser.
+ *
+ * Only what the exposition format actually guarantees: comments skipped, an
+ * optional label set in braces, and a numeric value. Anything unparseable is
+ * dropped rather than guessed at, because a wrong number is worse than a
+ * missing one on a monitoring page.
+ */
+export function parsePrometheus(text: string): PrometheusSample[] {
+  const samples: PrometheusSample[] = [];
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const match = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+(-?[\d.eE+]+|NaN)$/.exec(trimmed);
+    if (!match) continue;
+
+    const value = Number(match[3]);
+    if (!Number.isFinite(value)) continue;
+
+    const labels: Record<string, string> = {};
+    for (const pair of (match[2] ?? "").split(",")) {
+      const kv = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)="(.*)"\s*$/.exec(pair);
+      if (kv?.[1]) labels[kv[1]] = kv[2] ?? "";
+    }
+
+    samples.push({ name: match[1]!, labels, value });
+  }
+
+  return samples;
+}
+
+/** Sums every sample of a metric, optionally restricted by label. */
+export function sumMetric(
+  samples: PrometheusSample[],
+  name: string,
+  where: Record<string, string> = {},
+): number | null {
+  const matching = samples.filter(
+    (sample) => sample.name === name && Object.entries(where).every(([key, value]) => sample.labels[key] === value),
+  );
+
+  return matching.length === 0 ? null : matching.reduce((total, sample) => total + sample.value, 0);
 }

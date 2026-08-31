@@ -1,19 +1,37 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { WorkflowSummary } from "@bugbaar/api";
 import { api, type WorkflowRun } from "../api/client.ts";
-import { Card, Empty, ErrorBanner, formatDuration, Pill } from "../components.tsx";
+import {
+  Badge,
+  Card,
+  Drawer,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  RowSkeleton,
+  Status,
+  formatDuration,
+  formatWhen,
+} from "../components.tsx";
+import { Icon } from "../icons.tsx";
 
+/*
+ * Workflows: the registered definitions, a runner, and the persisted history.
+ *
+ * The step chain animates only while a run is actually in flight — an idle
+ * workflow renders as a static diagram, because motion that does not track
+ * real state is just noise.
+ */
 export function WorkflowsView() {
-  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
-  const [selected, setSelected] = useState("");
-  const [input, setInput] = useState(
-    '{\n  "id": "notes",\n  "text": "BugBaar Engine is open-source AI infrastructure."\n}',
-  );
+  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [selected, setSelected] = useState("");
+  const [input, setInput] = useState('{\n  "id": "notes",\n  "text": "BugBaar Engine is AI infrastructure."\n}');
+  const [detail, setDetail] = useState<WorkflowRun | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [running, setRunning] = useState(false);
 
-  const refresh = async (): Promise<void> => {
+  const load = useCallback(async (): Promise<void> => {
     try {
       const [list, history] = await Promise.all([api.listWorkflows(), api.workflowRuns()]);
       setWorkflows(list.workflows);
@@ -22,19 +40,20 @@ export function WorkflowsView() {
       setError(null);
     } catch (caught) {
       setError(caught);
+      setWorkflows([]);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    void load();
+  }, [load]);
 
   const run = async (): Promise<void> => {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(input) as Record<string, unknown>;
     } catch {
-      setError(new Error("Input must be valid JSON"));
+      setError(new Error("Input must be valid JSON."));
       return;
     }
 
@@ -42,7 +61,7 @@ export function WorkflowsView() {
     try {
       await api.runWorkflow(selected, parsed);
       setError(null);
-      await refresh();
+      await load();
     } catch (caught) {
       setError(caught);
     } finally {
@@ -50,87 +69,219 @@ export function WorkflowsView() {
     }
   };
 
-  const definition = workflows.find((workflow) => workflow.name === selected);
+  const definition = workflows?.find((workflow) => workflow.name === selected);
 
   return (
-    <div className="stack">
-      <ErrorBanner error={error} />
-
-      <Card title="Run a workflow" hint="Input is passed to the first step as the workflow's context.">
-        <div className="row">
-          <div className="field">
-            <label htmlFor="wf-name">Workflow</label>
-            <select id="wf-name" value={selected} onChange={(event) => setSelected(event.target.value)}>
-              {workflows.length === 0 ? <option value="">No workflows registered</option> : null}
-              {workflows.map((workflow) => (
-                <option key={workflow.name} value={workflow.name}>
-                  {workflow.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {definition ? (
-          <p className="muted" style={{ marginTop: 10 }}>
-            {definition.description} · Steps: {definition.steps.map((step) => step.name).join(" → ")}
-          </p>
-        ) : null}
-
-        <div className="field" style={{ marginTop: 12 }}>
-          <label htmlFor="wf-input">Input (JSON)</label>
-          <textarea id="wf-input" value={input} onChange={(event) => setInput(event.target.value)} />
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <button className="action" onClick={() => void run()} disabled={running || !selected}>
-            {running ? "Running…" : "Run workflow"}
+    <>
+      <PageHeader
+        title="Workflows"
+        description="Sequential steps with retries, timeouts, and cleanup that survives a failure. A failed run is recorded in full, not discarded."
+        actions={
+          <button className="btn ghost" onClick={() => void load()}>
+            {Icon.refresh({ size: 14 })} Refresh
           </button>
-        </div>
-      </Card>
+        }
+      />
 
-      <Card title={`Recent runs (${runs.length})`}>
-        {runs.length === 0 ? (
-          <Empty>No runs yet.</Empty>
-        ) : (
-          <div className="stack">
-            {runs.map((entry) => (
-              <div key={entry.runId} className="step succeeded" style={{ borderColor: "var(--border)" }}>
-                <div className="row" style={{ gap: 12 }}>
-                  <strong>{entry.workflow}</strong>
-                  <Pill status={entry.status} />
-                  <span className="muted">{formatDuration(entry.durationMs)}</span>
-                  <span className="muted">{new Date(entry.startedAt).toLocaleTimeString()}</span>
-                </div>
+      <ErrorState error={error} onRetry={() => void load()} />
 
-                {entry.error ? (
-                  <div className="banner error" style={{ marginTop: 8 }}>
-                    {entry.error}
-                  </div>
-                ) : null}
-
-                <div style={{ marginTop: 8 }}>
-                  {entry.steps.map((step) => (
-                    <div key={step.name} className={`step ${step.status}`} style={{ marginBottom: 6 }}>
-                      <div className="row" style={{ gap: 10 }}>
-                        <code>{step.name}</code>
-                        <Pill status={step.status} />
-                        {step.attempts > 1 ? <span className="muted">{step.attempts} attempts</span> : null}
-                        <span className="muted">{formatDuration(step.durationMs)}</span>
-                      </div>
-                      {step.error ? (
-                        <div className="muted" style={{ color: "var(--error)" }}>
-                          {step.error}
-                        </div>
-                      ) : null}
-                    </div>
+      {workflows === null ? (
+        <Card>
+          <RowSkeleton rows={3} />
+        </Card>
+      ) : workflows.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={Icon.workflows({ size: 18 })}
+            title="No workflows registered"
+            message="Workflows are registered in the backend at startup. None are currently available to run."
+          />
+        </Card>
+      ) : (
+        <div className="split">
+          <Card title="Run a workflow" className="rise">
+            <div className="stack">
+              <div className="field">
+                <label htmlFor="wf-name">Workflow</label>
+                <select id="wf-name" value={selected} onChange={(event) => setSelected(event.target.value)}>
+                  {workflows.map((workflow) => (
+                    <option key={workflow.name} value={workflow.name}>
+                      {workflow.name}
+                    </option>
                   ))}
-                </div>
+                </select>
               </div>
-            ))}
+
+              {definition ? (
+                <>
+                  <p className="muted" style={{ margin: 0 }}>
+                    {definition.description}
+                  </p>
+                  <StepChain steps={definition.steps.map((step) => step.name)} active={running} />
+                </>
+              ) : null}
+
+              <div className="field">
+                <label htmlFor="wf-input">Input (JSON)</label>
+                <textarea id="wf-input" value={input} onChange={(event) => setInput(event.target.value)} />
+              </div>
+
+              <div>
+                <button className="btn" onClick={() => void run()} disabled={running || !selected}>
+                  {running ? "Running…" : "Run workflow"}
+                </button>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Definition" className="rise">
+            {definition ? (
+              <div className="timeline">
+                {definition.steps.map((step, index) => (
+                  <div className="tl-item" key={step.name}>
+                    <span className="tl-node">
+                      <span className="mono" style={{ fontSize: 10 }}>
+                        {index + 1}
+                      </span>
+                    </span>
+                    <div className="tl-body">
+                      <div className="tl-title mono">{step.name}</div>
+                      {step.description ? <div className="muted">{step.description}</div> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="dim">Select a workflow.</span>
+            )}
+          </Card>
+        </div>
+      )}
+
+      <Card title="Run history" flush className="rise" actions={<Badge mono>{runs.length}</Badge>}>
+        {runs.length === 0 ? (
+          <div className="card-pad">
+            <EmptyState
+              icon={Icon.inbox({ size: 18 })}
+              title="No workflow runs yet"
+              message="Run a workflow above and its per-step record — including retries and failures — appears here."
+            />
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Workflow</th>
+                  <th>Steps</th>
+                  <th>Duration</th>
+                  <th>Started</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((entry) => (
+                  <tr key={entry.runId} className="clickable" onClick={() => setDetail(entry)}>
+                    <td>
+                      <Status status={entry.status} />
+                    </td>
+                    <td className="strong">{entry.workflow}</td>
+                    <td className="mono">{entry.steps.length}</td>
+                    <td className="mono">{formatDuration(entry.durationMs)}</td>
+                    <td className="dim">{formatWhen(entry.startedAt)}</td>
+                    <td>{Icon.chevron({ size: 14 })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </Card>
+
+      {detail ? (
+        <Drawer
+          title={detail.workflow}
+          subtitle={<span className="mono">{detail.runId}</span>}
+          onClose={() => setDetail(null)}
+        >
+          <div className="inline">
+            <Status status={detail.status} />
+            <Badge mono>{formatDuration(detail.durationMs)}</Badge>
+          </div>
+
+          {detail.error ? (
+            <div className="banner error">
+              <span style={{ marginTop: 2 }}>{Icon.alert({ size: 15 })}</span>
+              <div>{detail.error}</div>
+            </div>
+          ) : null}
+
+          <div>
+            <div className="dim" style={{ marginBottom: 10 }}>
+              Steps
+            </div>
+            <div className="timeline">
+              {detail.steps.map((step) => (
+                <div className="tl-item" key={step.name}>
+                  <span
+                    className={`tl-node ${
+                      step.status === "succeeded" ? "ok" : step.status === "failed" ? "danger" : ""
+                    }`.trim()}
+                  >
+                    {step.status === "succeeded"
+                      ? Icon.check({ size: 11 })
+                      : step.status === "failed"
+                        ? Icon.x({ size: 11 })
+                        : Icon.chevron({ size: 11 })}
+                  </span>
+                  <div className="tl-body">
+                    <div className="tl-title">
+                      <span className="mono">{step.name}</span>
+                      <Status status={step.status} />
+                      {step.attempts > 1 ? <Badge tone="warn">{step.attempts} attempts</Badge> : null}
+                      <span className="mono dim">{formatDuration(step.durationMs)}</span>
+                    </div>
+                    {step.error ? (
+                      <div className="muted" style={{ color: "var(--danger)" }}>
+                        {step.error}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Drawer>
+      ) : null}
+    </>
+  );
+}
+
+/** Horizontal step chain; the moving highlight tracks a real in-flight run. */
+function StepChain({ steps, active }: { steps: string[]; active: boolean }) {
+  return (
+    <div className="inline" style={{ gap: 0, flexWrap: "nowrap", overflowX: "auto", paddingBottom: 4 }}>
+      {steps.map((step, index) => (
+        <div className="inline" key={step} style={{ gap: 0, flexWrap: "nowrap" }}>
+          <span className={`badge ${active ? "live" : ""} mono`.trim()} style={{ flexShrink: 0 }}>
+            {active ? <span className="dot pulse" /> : null}
+            {step}
+          </span>
+          {index < steps.length - 1 ? (
+            <span
+              aria-hidden="true"
+              style={{
+                width: 22,
+                height: 1,
+                flexShrink: 0,
+                background: active ? "var(--live)" : "var(--border-strong)",
+                opacity: active ? 0.8 : 1,
+              }}
+            />
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

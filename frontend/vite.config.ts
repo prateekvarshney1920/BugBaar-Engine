@@ -12,6 +12,8 @@ export default defineConfig({
     proxy: {
       "/v1": { target: ENGINE_URL, changeOrigin: true },
       "/health": { target: ENGINE_URL, changeOrigin: true },
+      // The monitoring page reads the engine's Prometheus exposition directly.
+      "/metrics": { target: ENGINE_URL, changeOrigin: true },
     },
   },
   build: {
