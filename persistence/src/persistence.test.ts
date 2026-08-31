@@ -14,15 +14,70 @@ import { MongoWorkflowRunStore } from "./runs.ts";
 /**
  * These run against a real mongod supplied by mongodb-memory-server, so the
  * queries, indexes, and driver behaviour under test are the production ones.
+ *
+ * Startup happens at module top level, matching the Redis and Qdrant suites:
+ * node:test evaluates a test's options when the test is *registered*, which is
+ * before any before() hook runs, so a flag set in a hook is always too late.
  */
-let server: MongoMemoryServer;
-let layer: PersistenceLayer;
-let uri: string;
+let server: MongoMemoryServer | undefined;
+let layer!: PersistenceLayer;
+let uri = "";
+let startupFailure: string | null = null;
 
-before(async () => {
+try {
   server = await MongoMemoryServer.create();
   uri = server.getUri("bugbaar_test");
   layer = await createPersistence({ uri });
+} catch (error) {
+  startupFailure = error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
+/*
+ * An unavailable MongoDB is a failure here, not a skip — the opposite of the
+ * Redis and Qdrant suites, and deliberately so.
+ *
+ * Those two talk to external service containers that a developer may
+ * legitimately not be running, so skipping states the truth. MongoDB is
+ * different: mongodb-memory-server downloads and runs its own mongod, needs no
+ * service container, and is not configurable away. If it cannot start, the
+ * environment is broken, and every one of these tests silently not running is
+ * exactly the outcome worth preventing.
+ *
+ * Without this, the run still exits non-zero — node:test cancels the tests and
+ * propagates that — but the summary reads "fail 0" with a bare "cancelled"
+ * count and no reason, while the actual cause sits hundreds of lines up in the
+ * TAP diagnostics. This turns that into a named failure that says what broke.
+ */
+if (startupFailure !== null) {
+  // Registered first, so it is this named test that carries the failure into
+  // the summary; the rest cancel behind it.
+  test("MongoDB test infrastructure is available", () => {
+    assert.equal(startupFailure, null);
+  });
+}
+
+before(() => {
+  if (startupFailure === null) return;
+
+  // The explanation lives here rather than in the test body because a failing
+  // before() hook pre-empts the body, so this is the message that is actually
+  // shown. It is also re-thrown for every remaining test, which is why they
+  // cancel against the real cause instead of a confusing error about an
+  // undefined connection.
+  throw new Error(
+    [
+      "MongoDB test infrastructure unavailable — the persistence suite did not run.",
+      "",
+      "These tests exercise real MongoDB behaviour (indexes, atomic operators, driver",
+      "semantics) and are not meaningful against a mock, so they are never skipped.",
+      "",
+      "mongodb-memory-server manages its own mongod and needs no service container, so",
+      "this usually means the binary could not be downloaded or does not match this",
+      "platform.",
+      "",
+      `Cause: ${startupFailure}`,
+    ].join("\n"),
+  );
 });
 
 after(async () => {
