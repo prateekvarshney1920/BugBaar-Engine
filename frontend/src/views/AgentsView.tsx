@@ -1,19 +1,26 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AgentSummary } from "@bugbaar/api";
 import { api } from "../api/client.ts";
-import { Card, Empty, ErrorBanner } from "../components.tsx";
+import { Badge, Card, EmptyState, ErrorState, PageHeader, Skeleton, formatWhen } from "../components.tsx";
+import { Icon } from "../icons.tsx";
 
-export function AgentsView() {
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
+/*
+ * Agents are presented as infrastructure resources rather than profile cards:
+ * identifier, granted capabilities, and provenance, with the destructive
+ * action kept quiet until hover.
+ */
+export function AgentsView({ onOpenPlayground }: { onOpenPlayground: () => void }) {
+  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [tools, setTools] = useState<{ name: string; description: string }[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const [id, setId] = useState("");
   const [goal, setGoal] = useState("");
-  const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
 
-  const refresh = async (): Promise<void> => {
+  const load = useCallback(async (): Promise<void> => {
     try {
       const [agentList, toolList] = await Promise.all([api.listAgents(), api.listTools()]);
       setAgents(agentList.agents);
@@ -21,21 +28,23 @@ export function AgentsView() {
       setError(null);
     } catch (caught) {
       setError(caught);
+      setAgents([]);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    void load();
+  }, [load]);
 
   const create = async (): Promise<void> => {
     setBusy(true);
     try {
-      await api.createAgent({ id: id.trim(), goal: goal.trim() || undefined, tools: selectedTools });
+      await api.createAgent({ id: id.trim(), goal: goal.trim() || undefined, tools: selected });
       setId("");
       setGoal("");
-      setSelectedTools([]);
-      await refresh();
+      setSelected([]);
+      setCreating(false);
+      await load();
     } catch (caught) {
       setError(caught);
     } finally {
@@ -46,104 +55,176 @@ export function AgentsView() {
   const remove = async (agentId: string): Promise<void> => {
     try {
       await api.deleteAgent(agentId);
-      await refresh();
+      await load();
     } catch (caught) {
       setError(caught);
     }
   };
 
-  const toggleTool = (name: string): void => {
-    setSelectedTools((current) =>
-      current.includes(name) ? current.filter((tool) => tool !== name) : [...current, name],
-    );
-  };
+  const toggle = (name: string): void =>
+    setSelected((current) => (current.includes(name) ? current.filter((t) => t !== name) : [...current, name]));
 
   return (
-    <div className="stack">
-      <ErrorBanner error={error} />
+    <>
+      <PageHeader
+        title="Agents"
+        description="Each agent is a stored definition — goal, instructions, and the tools it is permitted to call — rebuilt from the database when the engine restarts."
+        actions={
+          <>
+            <button className="btn ghost" onClick={onOpenPlayground}>
+              {Icon.play({ size: 13 })} Playground
+            </button>
+            <button className="btn" onClick={() => setCreating((open) => !open)}>
+              {Icon.plus({ size: 14 })} New agent
+            </button>
+          </>
+        }
+      />
 
-      <Card title="Create an agent" hint="An agent can only call the tools you grant it here.">
-        <div className="row">
-          <div className="field">
-            <label htmlFor="agent-id">Agent id</label>
-            <input
-              id="agent-id"
-              value={id}
-              onChange={(event) => setId(event.target.value)}
-              placeholder="researcher"
-            />
-          </div>
-          <div className="field" style={{ flex: 2 }}>
-            <label htmlFor="agent-goal">Goal (optional)</label>
-            <input
-              id="agent-goal"
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              placeholder="Answer questions about our documentation."
-            />
-          </div>
-          <button className="action" onClick={() => void create()} disabled={busy || id.trim() === ""}>
-            {busy ? "Creating…" : "Create"}
-          </button>
-        </div>
+      <ErrorState error={error} onRetry={() => void load()} />
 
-        {tools.length > 0 ? (
-          <div style={{ marginTop: 14 }}>
-            <span className="muted">Tools</span>
-            <div className="row" style={{ marginTop: 6, gap: 14 }}>
-              {tools.map((tool) => (
-                <label
-                  key={tool.name}
-                  className="muted"
-                  style={{ display: "flex", gap: 6, flex: "0 0 auto" }}
-                  title={tool.description}
-                >
-                  <input
-                    type="checkbox"
-                    style={{ width: "auto" }}
-                    checked={selectedTools.includes(tool.name)}
-                    onChange={() => toggleTool(tool.name)}
-                  />
-                  <code>{tool.name}</code>
-                </label>
-              ))}
+      {creating ? (
+        <Card
+          title="Create an agent"
+          hint="An agent can only call the tools granted here. Unknown tool names are rejected by the API."
+          className="rise"
+          actions={
+            <button className="icon-btn" onClick={() => setCreating(false)} aria-label="Cancel">
+              {Icon.x({ size: 15 })}
+            </button>
+          }
+        >
+          <div className="stack">
+            <div className="row">
+              <div className="field" style={{ flex: 1 }}>
+                <label htmlFor="agent-id">Agent id</label>
+                <input
+                  id="agent-id"
+                  value={id}
+                  onChange={(event) => setId(event.target.value)}
+                  placeholder="researcher"
+                />
+              </div>
+              <div className="field" style={{ flex: 2.4 }}>
+                <label htmlFor="agent-goal">Goal (optional)</label>
+                <input
+                  id="agent-goal"
+                  value={goal}
+                  onChange={(event) => setGoal(event.target.value)}
+                  placeholder="Answer questions about our documentation."
+                />
+              </div>
+            </div>
+
+            {tools.length > 0 ? (
+              <div className="field">
+                <label>Tools</label>
+                <div className="inline">
+                  {tools.map((tool) => (
+                    <label
+                      className="check"
+                      key={tool.name}
+                      title={tool.description}
+                      data-on={selected.includes(tool.name)}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(tool.name)}
+                        onChange={() => toggle(tool.name)}
+                      />
+                      {tool.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="inline">
+              <button className="btn" onClick={() => void create()} disabled={busy || id.trim() === ""}>
+                {busy ? "Creating…" : "Create agent"}
+              </button>
+              <button className="btn quiet" onClick={() => setCreating(false)}>
+                Cancel
+              </button>
             </div>
           </div>
-        ) : null}
-      </Card>
+        </Card>
+      ) : null}
 
-      <Card title={`Agents (${agents.length})`}>
-        {agents.length === 0 ? (
-          <Empty>No agents yet. Create one above.</Empty>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Id</th>
-                <th>Name</th>
-                <th>Tools</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr key={agent.id}>
-                  <td>
-                    <code>{agent.id}</code>
-                  </td>
-                  <td>{agent.name}</td>
-                  <td className="muted">{agent.tools.length > 0 ? agent.tools.join(", ") : "—"}</td>
-                  <td style={{ textAlign: "right" }}>
-                    <button className="action danger" onClick={() => void remove(agent.id)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-    </div>
+      {agents === null ? (
+        <div className="grid cards">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div className="card" key={index}>
+              <Skeleton height={18} width="55%" />
+              <div style={{ height: 10 }} />
+              <Skeleton height={12} width="80%" />
+              <div style={{ height: 14 }} />
+              <Skeleton height={20} width="40%" />
+            </div>
+          ))}
+        </div>
+      ) : agents.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={Icon.agents({ size: 18 })}
+            title="No agents yet"
+            message="An agent pairs a goal and a set of tools with the configured model provider. Create one to start running it."
+            action={
+              <button className="btn" onClick={() => setCreating(true)}>
+                {Icon.plus({ size: 13 })} Create your first agent
+              </button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="grid cards">
+          {agents.map((agent) => (
+            <article className="card interactive rise" key={agent.id}>
+              <div className="inline" style={{ marginBottom: 10 }}>
+                <span className="metric-icon accent">{Icon.agents({ size: 14 })}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="strong truncate">{agent.name}</div>
+                  <div className="mono dim truncate">{agent.id}</div>
+                </div>
+                <button
+                  className="btn danger sm"
+                  style={{ marginLeft: "auto" }}
+                  onClick={() => void remove(agent.id)}
+                  aria-label={`Delete ${agent.id}`}
+                >
+                  {Icon.trash({ size: 13 })}
+                </button>
+              </div>
+
+              <div className="stack" style={{ gap: 10 }}>
+                <div>
+                  <div className="dim" style={{ marginBottom: 4 }}>
+                    Tools
+                  </div>
+                  <div className="inline">
+                    {agent.tools.length > 0 ? (
+                      agent.tools.map((tool) => (
+                        <Badge key={tool} tone="accent" mono>
+                          {Icon.tool({ size: 11 })} {tool}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="dim">None granted</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="inline" style={{ justifyContent: "space-between" }}>
+                  <span className="dim">Created {formatWhen(agent.createdAt)}</span>
+                  <button className="btn quiet sm" onClick={onOpenPlayground}>
+                    Run {Icon.chevron({ size: 12 })}
+                  </button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </>
   );
 }

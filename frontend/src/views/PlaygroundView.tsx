@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentSummary, RunAgentResponse } from "@bugbaar/api";
 import { api, streamAgentRun, type AgentEvent } from "../api/client.ts";
-import { Card, Empty, ErrorBanner, formatDuration, Pill } from "../components.tsx";
+import { Badge, Card, EmptyState, ErrorState, PageHeader, Status, formatDuration } from "../components.tsx";
+import { Icon } from "../icons.tsx";
 
 interface LiveTool {
   name: string;
@@ -16,6 +17,14 @@ interface LiveStep {
   tools: LiveTool[];
 }
 
+/*
+ * The execution surface: prompt on the left, live response in the centre,
+ * execution metadata on the right.
+ *
+ * Everything on the right is derived from events the server actually sent —
+ * elapsed time is measured locally, steps and tool outcomes come from the
+ * stream. No token counts are shown, because the engine does not report them.
+ */
 export function PlaygroundView() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentId, setAgentId] = useState("");
@@ -25,10 +34,14 @@ export function PlaygroundView() {
   const [text, setText] = useState("");
   const [steps, setSteps] = useState<LiveStep[]>([]);
   const [result, setResult] = useState<RunAgentResponse | null>(null);
+  const [runId, setRunId] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   const abortRef = useRef<AbortController | null>(null);
+  const startedAt = useRef(0);
+  const output = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
     api
@@ -43,8 +56,25 @@ export function PlaygroundView() {
   // Never leave a stream running behind an unmounted view.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // A single interval drives the elapsed clock; no per-frame loop.
+  useEffect(() => {
+    if (!running) return;
+
+    const timer = setInterval(() => setElapsed(Date.now() - startedAt.current), 100);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  // Keep the newest tokens in view while text streams in.
+  useEffect(() => {
+    output.current?.scrollTo({ top: output.current.scrollHeight });
+  }, [text]);
+
   const applyEvent = (event: AgentEvent): void => {
     switch (event.type) {
+      case "run-start":
+        setRunId(event.runId);
+        break;
+
       case "step-start":
         setSteps((current) =>
           current.some((step) => step.index === event.index)
@@ -54,8 +84,6 @@ export function PlaygroundView() {
         break;
 
       case "token":
-        // Tokens for a new step start a fresh block of text rather than
-        // appending to the previous step's reasoning.
         setText((current) => current + event.text);
         break;
 
@@ -113,10 +141,13 @@ export function PlaygroundView() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    startedAt.current = Date.now();
     setRunning(true);
+    setElapsed(0);
     setText("");
     setSteps([]);
     setResult(null);
+    setRunId("");
     setError(null);
 
     try {
@@ -136,99 +167,214 @@ export function PlaygroundView() {
   };
 
   const stop = (): void => abortRef.current?.abort();
+  const agent = agents.find((entry) => entry.id === agentId);
+  const toolCalls = steps.flatMap((step) => step.tools);
 
   return (
-    <div className="stack">
-      <ErrorBanner error={error} />
-
-      <Card title="Playground" hint="Runs stream live: text appears as the model produces it.">
-        <div className="row">
-          <div className="field">
-            <label htmlFor="pg-agent">Agent</label>
-            <select id="pg-agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-              {agents.length === 0 ? <option value="">No agents available</option> : null}
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="pg-session">Session id</label>
-            <input
-              id="pg-session"
-              value={sessionId}
-              onChange={(event) => setSessionId(event.target.value)}
-              placeholder="playground"
-            />
-          </div>
-        </div>
-
-        <div className="field" style={{ marginTop: 12 }}>
-          <label htmlFor="pg-input">Prompt</label>
-          <textarea id="pg-input" value={input} onChange={(event) => setInput(event.target.value)} />
-        </div>
-
-        <div className="row" style={{ marginTop: 12 }}>
-          <button className="action" onClick={() => void run()} disabled={running || !agentId || !input.trim()}>
-            {running ? "Streaming…" : "Run agent"}
-          </button>
-          {running ? (
-            <button className="action ghost" onClick={stop}>
-              Stop
+    <>
+      <PageHeader
+        title="Playground"
+        description="Runs stream over server-sent events. Text appears as the model produces it, and closing the stream cancels the run on the server."
+        actions={
+          running ? (
+            <button className="btn ghost" onClick={stop}>
+              {Icon.stop({ size: 13 })} Stop
             </button>
-          ) : null}
-        </div>
-      </Card>
+          ) : (
+            <button className="btn" onClick={() => void run()} disabled={!agentId || !input.trim()}>
+              {Icon.play({ size: 13 })} Run agent
+            </button>
+          )
+        }
+      />
 
-      {running || text || result ? (
-        <Card title="Response">
-          <div className="row" style={{ gap: 16, marginBottom: 12 }}>
-            {result ? <Pill status={result.stoppedBecause} /> : <Pill status="streaming" />}
-            {result ? <span className="muted">{formatDuration(result.durationMs)}</span> : null}
-            {result ? <span className="muted mono">run {result.runId.slice(0, 8)}</span> : null}
+      <ErrorState error={error} />
+
+      {agents.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={Icon.agents({ size: 18 })}
+            title="No agents available"
+            message="The playground runs an existing agent. Create one from the Agents page first."
+          />
+        </Card>
+      ) : (
+        <div className="split">
+          <div className="stack">
+            <Card title="Prompt" className="rise">
+              <div className="stack">
+                <div className="row">
+                  <div className="field" style={{ flex: 1 }}>
+                    <label htmlFor="pg-agent">Agent</label>
+                    <select id="pg-agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+                      {agents.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field" style={{ flex: 1 }}>
+                    <label htmlFor="pg-session">Session</label>
+                    <input
+                      id="pg-session"
+                      value={sessionId}
+                      onChange={(event) => setSessionId(event.target.value)}
+                      placeholder="playground"
+                    />
+                  </div>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="pg-input">Message</label>
+                  <textarea id="pg-input" value={input} onChange={(event) => setInput(event.target.value)} />
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="Response"
+              className="rise"
+              actions={
+                running ? (
+                  <Badge tone="live">
+                    <span className="dot pulse" /> streaming
+                  </Badge>
+                ) : result ? (
+                  <Status status={result.stoppedBecause} />
+                ) : null
+              }
+            >
+              <pre className="stream" ref={output} aria-live="polite">
+                {text || (running ? "" : "Run the agent to see its response here.")}
+                {running ? <span className="caret" /> : null}
+              </pre>
+            </Card>
           </div>
 
-          <pre aria-live="polite">
-            {text || (running ? "…" : "(empty response)")}
-            {running ? <span className="cursor" /> : null}
-          </pre>
-        </Card>
-      ) : null}
-
-      {steps.length > 0 ? (
-        <Card title={`Steps (${steps.length})`}>
-          {steps.map((step) => (
-            <div key={step.index} className="step succeeded">
-              <div className="muted">Step {step.index + 1}</div>
-              {step.thought ? <div style={{ margin: "4px 0" }}>{step.thought}</div> : null}
-              {step.tools.map((tool, index) => (
-                <div key={`${tool.name}-${index}`} className="row" style={{ gap: 10, marginTop: 4 }}>
-                  <code>{tool.name}</code>
-                  {tool.ok === undefined ? (
-                    <Pill status="running" />
+          <div className="stack">
+            <Card title="Execution" className="rise">
+              <div className="stack" style={{ gap: 10 }}>
+                <Row label="Status">
+                  {running ? (
+                    <Badge tone="live">
+                      <span className="dot pulse" /> running
+                    </Badge>
+                  ) : result ? (
+                    <Status status={result.stoppedBecause} />
                   ) : (
-                    <Pill status={tool.ok ? "succeeded" : "failed"} />
+                    <span className="dim">idle</span>
                   )}
-                  {tool.durationMs !== undefined ? (
-                    <span className="muted">{formatDuration(tool.durationMs)}</span>
-                  ) : null}
-                  {tool.error ? (
-                    <span className="muted" style={{ color: "var(--error)" }}>
-                      {tool.error}
-                    </span>
-                  ) : null}
+                </Row>
+
+                <Row label="Elapsed">
+                  <span className="mono">
+                    {running ? formatDuration(elapsed) : result ? formatDuration(result.durationMs) : "—"}
+                  </span>
+                </Row>
+
+                <Row label="Run id">
+                  <span className="mono dim">{runId ? runId.slice(0, 8) : "—"}</span>
+                </Row>
+
+                <Row label="Steps">
+                  <span className="mono">{steps.length}</span>
+                </Row>
+
+                <Row label="Tool calls">
+                  <span className="mono">{toolCalls.length}</span>
+                </Row>
+              </div>
+            </Card>
+
+            <Card title="Agent" className="rise">
+              {agent ? (
+                <div className="stack" style={{ gap: 10 }}>
+                  <Row label="Name">
+                    <span className="truncate">{agent.name}</span>
+                  </Row>
+                  <Row label="Identifier">
+                    <span className="mono dim">{agent.id}</span>
+                  </Row>
+                  <div>
+                    <div className="dim" style={{ marginBottom: 5 }}>
+                      Tools
+                    </div>
+                    <div className="inline">
+                      {agent.tools.length > 0 ? (
+                        agent.tools.map((tool) => (
+                          <Badge key={tool} tone="accent" mono>
+                            {tool}
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="dim">None granted</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
-          ))}
-        </Card>
-      ) : result?.steps.length === 0 ? (
-        <Card title="Steps">
-          <Empty>The agent answered directly, without calling any tools.</Empty>
-        </Card>
-      ) : null}
+              ) : (
+                <span className="dim">Select an agent.</span>
+              )}
+            </Card>
+
+            {steps.length > 0 ? (
+              <Card title="Trace" className="rise">
+                <div className="timeline">
+                  {steps.map((step) => (
+                    <div key={step.index}>
+                      <div className="tl-item">
+                        <span className="tl-node">
+                          <span className="mono" style={{ fontSize: 10 }}>
+                            {step.index + 1}
+                          </span>
+                        </span>
+                        <div className="tl-body">
+                          <div className="tl-title">Step {step.index + 1}</div>
+                          {step.thought ? <div className="muted">{step.thought}</div> : null}
+                        </div>
+                      </div>
+
+                      {step.tools.map((tool, index) => (
+                        <div className="tl-item" key={`${tool.name}-${index}`}>
+                          <span className={`tl-node ${tool.ok === undefined ? "live" : tool.ok ? "ok" : "danger"}`}>
+                            {Icon.tool({ size: 11 })}
+                          </span>
+                          <div className="tl-body">
+                            <div className="tl-title">
+                              <span className="mono">{tool.name}</span>
+                              {tool.ok === undefined ? (
+                                <Badge tone="live">
+                                  <span className="dot pulse" /> running
+                                </Badge>
+                              ) : (
+                                <>
+                                  <Badge tone={tool.ok ? "ok" : "danger"}>{tool.ok ? "ok" : "failed"}</Badge>
+                                  <span className="mono dim">{formatDuration(tool.durationMs)}</span>
+                                </>
+                              )}
+                            </div>
+                            {tool.error ? <div className="muted">{tool.error}</div> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="inline" style={{ justifyContent: "space-between", gap: 12 }}>
+      <span className="dim">{label}</span>
+      {children}
     </div>
   );
 }
