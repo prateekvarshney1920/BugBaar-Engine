@@ -1,0 +1,19 @@
+{
+  "name": "@bugbaar/workflows",
+  "version": "0.1.0",
+  "description": "Workflow engine: step orchestration, retries, event triggers, and queue-backed background jobs.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}
