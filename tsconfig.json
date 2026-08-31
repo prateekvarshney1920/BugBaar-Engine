@@ -1,0 +1,29 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./tools"
+    },
+    {
+      "path": "./agents"
+    },
+    {
+      "path": "./rag"
+    },
+    {
+      "path": "./workflows"
+    },
+    {
+      "path": "./persistence"
+    },
+    {
+      "path": "./queue"
+    },
+    {
+      "path": "./api"
+    },
+    {
+      "path": "./backend"
+    }
+  ]
+}

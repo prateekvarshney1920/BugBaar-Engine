@@ -1,0 +1,47 @@
+{
+  "name": "bugbaar-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source infrastructure for AI Agents, workflow automation, and intelligent systems.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "tools",
+    "agents",
+    "rag",
+    "workflows",
+    "persistence",
+    "queue",
+    "api",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "build:frontend": "npm run build --workspace @bugbaar/frontend",
+    "clean": "tsc --build --clean",
+    "dev": "npm run dev --workspace @bugbaar/backend",
+    "dev:frontend": "npm run dev --workspace @bugbaar/frontend",
+    "start": "npm run start --workspace @bugbaar/backend",
+    "typecheck": "tsc --build --dry",
+    "test": "node --import tsx --test \"tools/src/**/*.test.ts\" \"agents/src/**/*.test.ts\" \"rag/src/**/*.test.ts\" \"workflows/src/**/*.test.ts\" \"persistence/src/**/*.test.ts\" \"queue/src/**/*.test.ts\" \"backend/src/**/*.test.ts\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.68.0"
+  }
+}
