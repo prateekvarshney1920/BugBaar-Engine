@@ -1,0 +1,19 @@
+{
+  "name": "@bugbaar/rag",
+  "version": "0.1.0",
+  "description": "Knowledge and RAG engine: chunking, embeddings, vector search, and retrieval pipelines.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}
