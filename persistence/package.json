@@ -1,0 +1,27 @@
+{
+  "name": "@bugbaar/persistence",
+  "version": "0.1.0",
+  "description": "MongoDB-backed implementations of the BugBaar Engine storage interfaces.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@bugbaar/agents": "0.1.0",
+    "@bugbaar/workflows": "0.1.0",
+    "mongodb": "^6.12.0"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  }
+}
