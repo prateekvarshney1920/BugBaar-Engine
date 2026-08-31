@@ -23,6 +23,15 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** Emitted after each step so callers can follow progress. */
   onStep?: (step: AgentRunStep) => void;
+  /**
+   * Emitted for every event the run produces, before it is yielded.
+   *
+   * `run()` drains `stream()`, so an observer registered here sees the same
+   * events on both paths. That matters for anything watching the lifecycle —
+   * run history, tracing — which would otherwise have to be wired twice and
+   * would drift.
+   */
+  onEvent?: (event: AgentEvent) => void;
 }
 
 /**
@@ -96,7 +105,12 @@ export class Agent {
     const runId = crypto.randomUUID();
     const sessionId = options.sessionId ?? this.id;
 
-    yield { type: "run-start", runId, agentId: this.id, input };
+    const emit = (event: AgentEvent): AgentEvent => {
+      options.onEvent?.(event);
+      return event;
+    };
+
+    yield emit({ type: "run-start", runId, agentId: this.id, input });
 
     const history = await this.#memory.history(sessionId);
     const messages: Message[] = [...this.#systemMessages(), ...history, { role: "user", content: input }];
@@ -111,7 +125,7 @@ export class Agent {
         break;
       }
 
-      yield { type: "step-start", index };
+      yield emit({ type: "step-start", index });
 
       const request = {
         messages,
@@ -126,7 +140,7 @@ export class Agent {
         let assembled: CompletionResponse | undefined;
 
         for await (const chunk of this.#provider.stream(request)) {
-          if (chunk.delta) yield { type: "token", index, text: chunk.delta };
+          if (chunk.delta) yield emit({ type: "token", index, text: chunk.delta });
           if (chunk.done) assembled = chunk.done;
         }
 
@@ -136,11 +150,11 @@ export class Agent {
         completion = await this.#provider.complete(request);
         // Keep the event shape identical for non-streaming providers, so a
         // consumer never needs to know which kind it is talking to.
-        if (completion.content) yield { type: "token", index, text: completion.content };
+        if (completion.content) yield emit({ type: "token", index, text: completion.content });
       }
 
       const toolCalls = completion.toolCalls ?? [];
-      yield { type: "message", index, content: completion.content, toolCalls };
+      yield emit({ type: "message", index, content: completion.content, toolCalls });
 
       messages.push({
         role: "assistant",
@@ -154,7 +168,7 @@ export class Agent {
         break;
       }
 
-      for (const call of toolCalls) yield { type: "tool-start", index, call };
+      for (const call of toolCalls) yield emit({ type: "tool-start", index, call });
 
       // Tool calls in a single turn are independent by contract, so run them
       // concurrently and preserve the model's ordering in the transcript.
@@ -163,7 +177,7 @@ export class Agent {
       );
 
       for (const result of toolResults) {
-        yield { type: "tool-result", index, result };
+        yield emit({ type: "tool-result", index, result });
         messages.push({
           role: "tool",
           toolCallId: result.callId,
@@ -191,7 +205,7 @@ export class Agent {
       durationMs: Math.round(performance.now() - startedAt),
     };
 
-    yield { type: "run-end", result };
+    yield emit({ type: "run-end", result });
     return result;
   }
 

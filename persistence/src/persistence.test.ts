@@ -3,6 +3,8 @@ import { after, before, describe, test } from "node:test";
 import type { AgentDefinition } from "@bugbaar/agents";
 import type { WorkflowRun } from "@bugbaar/workflows";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { runAgentRunStoreContract } from "@bugbaar/agents";
+import { MongoAgentRunStore } from "./agent-runs.ts";
 import { MongoAgentRepository } from "./agents.ts";
 import { createPersistence, type PersistenceLayer } from "./bootstrap.ts";
 import { MongoConnection } from "./connection.ts";
@@ -310,4 +312,16 @@ describe("MongoMemoryStore concurrency", () => {
     assert.equal(history.length, 1);
     assert.equal(history[0]?.content, "after clear");
   });
+});
+
+// The same contract the in-memory store satisfies, so the two cannot diverge.
+let agentRunCollection = 0;
+runAgentRunStoreContract("MongoAgentRunStore", {
+  createStore: async () => {
+    const store = new MongoAgentRunStore(layer.connection.db(), {
+      collectionName: `agent_runs_contract_${++agentRunCollection}`,
+    });
+    await store.ensureIndexes();
+    return store;
+  },
 });

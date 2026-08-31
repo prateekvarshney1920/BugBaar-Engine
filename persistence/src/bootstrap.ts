@@ -1,5 +1,6 @@
-import type { AgentRepository, MemoryStore } from "@bugbaar/agents";
+import type { AgentRepository, AgentRunStore, MemoryStore } from "@bugbaar/agents";
 import type { WorkflowRunStore } from "@bugbaar/workflows";
+import { MongoAgentRunStore } from "./agent-runs.js";
 import { MongoAgentRepository } from "./agents.js";
 import { MongoConnection, type MongoConnectionOptions } from "./connection.js";
 import { MongoMemoryStore } from "./memory.js";
@@ -10,6 +11,7 @@ export interface PersistenceLayer {
   memory: MemoryStore;
   agents: AgentRepository;
   runs: WorkflowRunStore;
+  agentRuns: AgentRunStore;
   close(): Promise<void>;
 }
 
@@ -32,14 +34,21 @@ export async function createPersistence(options: CreatePersistenceOptions): Prom
   const memory = new MongoMemoryStore(db, { maxMessagesPerSession: options.maxMessagesPerSession });
   const agents = new MongoAgentRepository(db);
   const runs = new MongoWorkflowRunStore(db, { retentionDays: options.retentionDays });
+  const agentRuns = new MongoAgentRunStore(db, { retentionDays: options.retentionDays });
 
-  await Promise.all([memory.ensureIndexes(), agents.ensureIndexes(), runs.ensureIndexes()]);
+  await Promise.all([
+    memory.ensureIndexes(),
+    agents.ensureIndexes(),
+    runs.ensureIndexes(),
+    agentRuns.ensureIndexes(),
+  ]);
 
   return {
     connection,
     memory,
     agents,
     runs,
+    agentRuns,
     close: () => connection.close(),
   };
 }
