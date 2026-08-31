@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.github
+docs
+# Exclude the dashboard's source but keep its manifest — npm ci needs a
+# package.json for every workspace in the lockfile.
+frontend/**
+!frontend/package.json
+.env
+.env.*
+!.env.example
