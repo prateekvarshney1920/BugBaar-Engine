@@ -22,6 +22,7 @@ import {
   OpenAiEmbeddingProvider,
   QdrantVectorStore,
   RagPipeline,
+  createKnowledgeSearchTool,
   type EmbeddingProvider,
   type VectorStore,
 } from "@bugbaar/rag";
@@ -98,6 +99,10 @@ export class Container {
     this.#rateLimiter = new InMemoryRateLimiter(config.rateLimit);
 
     this.registerTool(calculatorTool);
+    // Retrieval is a tool like any other, so an agent can decide for itself
+    // when a question needs the knowledge base rather than the caller
+    // deciding in advance (which is all /v1/knowledge/ask can do).
+    this.registerTool(createKnowledgeSearchTool({ pipeline: this.rag }));
   }
 
   get memory(): MemoryStore {

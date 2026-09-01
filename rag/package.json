@@ -9,6 +9,12 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "dependencies": {
+    "@bugbaar/tools": "0.1.0"
+  },
+  "devDependencies": {
+    "@bugbaar/agents": "0.1.0"
+  },
   "files": [
     "dist"
   ],

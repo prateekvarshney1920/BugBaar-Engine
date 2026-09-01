@@ -233,6 +233,26 @@ describe("agents", () => {
     assert.ok(calculator, "the calculator tool should be registered");
     assert.ok(calculator.parameters, "each tool must publish its JSON schema");
   });
+
+  test("knowledge retrieval is in the catalogue, so an agent can choose to search", async () => {
+    const { body } = await h.json<{ tools: { name: string; parameters: { required?: string[] } }[] }>("/v1/tools");
+
+    const search = body.tools.find((tool) => tool.name === "knowledge_search");
+    assert.ok(search, "knowledge_search should be registered alongside the other built-ins");
+    assert.deepEqual(search.parameters.required, ["query"]);
+  });
+
+  test("an agent can be granted the knowledge tool like any other", async () => {
+    const created = await h.json<{ tools: string[] }>(
+      "/v1/agents",
+      post({ id: "researcher", name: "Researcher", tools: ["knowledge_search"] }),
+    );
+
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.tools, ["knowledge_search"]);
+
+    await h.json("/v1/agents/researcher", { method: "DELETE" });
+  });
 });
 
 describe("knowledge", () => {
