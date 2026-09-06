@@ -47,6 +47,25 @@ function readNumber(name: string, fallback: number): number {
   return value;
 }
 
+/**
+ * Reads a variable that has a finite set of legal values.
+ *
+ * An unrecognised value is a startup error rather than a silent fallback: a
+ * near-miss `NODE_ENV` decides whether the API-key guard and error redaction
+ * engage at all, so guessing what the operator meant is the dangerous choice.
+ */
+function readEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
+  const raw = process.env[name];
+  // Unset and empty are the same thing here, matching readNumber.
+  if (!raw) return fallback;
+
+  const match = allowed.find((value) => value === raw);
+  if (match === undefined) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}, received "${raw}"`);
+  }
+  return match;
+}
+
 function readList(name: string): string[] {
   return (process.env[name] ?? "")
     .split(",")
@@ -55,9 +74,9 @@ function readList(name: string): string[] {
 }
 
 export function loadConfig(): Config {
-  const env = (process.env.NODE_ENV ?? "development") as Config["env"];
+  const env = readEnum("NODE_ENV", ["development", "test", "production"] as const, "development");
   const apiKeys = readList("API_KEYS");
-  const provider = (process.env.LLM_PROVIDER ?? "echo") as Config["llm"]["provider"];
+  const provider = readEnum("LLM_PROVIDER", ["echo", "openai", "ollama"] as const, "echo");
 
   // An unauthenticated gateway is a production outage waiting to happen, so
   // refuse to boot without keys rather than silently allowing anonymous access.
@@ -71,7 +90,7 @@ export function loadConfig(): Config {
   return {
     env,
     port: readNumber("PORT", 4000),
-    logLevel: (process.env.LOG_LEVEL ?? "info") as Config["logLevel"],
+    logLevel: readEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),
     apiKeys,
     corsOrigin: process.env.CORS_ORIGIN ?? "*",
     seedExamples: (process.env.SEED_EXAMPLES ?? "true").toLowerCase() !== "false",

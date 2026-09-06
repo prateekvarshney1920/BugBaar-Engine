@@ -530,6 +530,67 @@ describe("configuration", () => {
     );
   });
 
+  /*
+   * NODE_ENV, LLM_PROVIDER, and LOG_LEVEL each have a finite set of legal
+   * values, and each was cast rather than checked. The dangerous one is
+   * NODE_ENV: the production API-key guard and the error-message redaction in
+   * the error handler both compare it to the exact string "production", so a
+   * near miss like "Production" quietly boots an unauthenticated gateway that
+   * also returns internal error text. Rejecting at startup is the point —
+   * these assert the boundary, not the helper.
+   */
+  /*
+   * Closes the harness if it boots, so a regression leaves a failed assertion
+   * rather than a listening server that keeps the test runner alive forever.
+   */
+  const bootRejects = async (env: Record<string, string | undefined>, message: RegExp) => {
+    await assert.rejects(async () => {
+      const harness = await createHarness({ env, seed: false });
+      await harness.close();
+    }, message);
+  };
+
+  test("a near-miss NODE_ENV is rejected instead of silently disabling the production guard", async () => {
+    for (const value of ["Production", "prod", "staging"]) {
+      await bootRejects({ NODE_ENV: value, API_KEYS: "" }, /NODE_ENV must be one of development, test, production/);
+    }
+  });
+
+  test("an unsupported LLM_PROVIDER is rejected rather than falling back to echo", async () => {
+    await bootRejects({ LLM_PROVIDER: "OpenAI" }, /LLM_PROVIDER must be one of echo, openai, ollama/);
+  });
+
+  test("an unsupported LOG_LEVEL is rejected", async () => {
+    await bootRejects({ LOG_LEVEL: "verbose" }, /LOG_LEVEL must be one of debug, info, warn, error/);
+  });
+
+  test("every supported enum value still boots", async () => {
+    const cases = [
+      { NODE_ENV: "development" },
+      { NODE_ENV: "test" },
+      { NODE_ENV: "production", API_KEYS: "a-key" },
+      { LLM_PROVIDER: "echo" },
+      { LLM_PROVIDER: "openai", OPENAI_API_KEY: "sk-test" },
+      { LLM_PROVIDER: "ollama" },
+      { LOG_LEVEL: "debug" },
+      { LOG_LEVEL: "info" },
+      { LOG_LEVEL: "warn" },
+      { LOG_LEVEL: "error" },
+      // Unset and empty both mean "use the default", as readNumber treats them.
+      { NODE_ENV: undefined, LLM_PROVIDER: undefined, LOG_LEVEL: undefined },
+      { NODE_ENV: "", LLM_PROVIDER: "", LOG_LEVEL: "" },
+    ];
+
+    for (const env of cases) {
+      const harness = await createHarness({ env: { LOG_LEVEL: "error", ...env }, seed: false });
+      try {
+        assert.equal((await harness.request("/health")).status, 200, `${JSON.stringify(env)} should boot`);
+      } finally {
+        await harness.close();
+      }
+    }
+  });
+
   test("SEED_EXAMPLES=false leaves a deleted example deleted", async () => {
     const unseeded = await createHarness({ env: { SEED_EXAMPLES: "false" } });
 
