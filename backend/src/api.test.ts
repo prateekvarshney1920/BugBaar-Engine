@@ -304,6 +304,86 @@ describe("knowledge", () => {
     const response = await h.request("/v1/knowledge/ask", post({ query: "anything", agentId: "ghost" }));
     assert.equal(response.status, 400);
   });
+
+  /*
+   * These run on their own harness: a clean container proves the shared rag
+   * session stays empty because of the fix rather than because another test
+   * happened to leave it that way, and it keeps the extra requests off the
+   * shared harness's rate-limit budget.
+   */
+  test("ask answers with the documents that informed it", async () => {
+    const ask = await createHarness();
+
+    try {
+      await ask.json(
+        "/v1/knowledge/documents",
+        post({ documents: [{ id: "ask-doc", text: "Retries use exponential backoff with a five second ceiling." }] }),
+      );
+
+      const { status, body } = await ask.json<{ answer: string; runId: string; sources: { documentId: string }[] }>(
+        "/v1/knowledge/ask",
+        post({ query: "how do retries work", agentId: "assistant", topK: 3 }),
+      );
+
+      assert.equal(status, 200);
+      assert.ok(body.answer.length > 0, "a legitimate ask still gets an answer");
+      assert.ok(body.runId, "and a run id");
+      assert.equal(body.sources[0]?.documentId, "ask-doc");
+    } finally {
+      await ask.close();
+    }
+  });
+
+  /*
+   * `/knowledge/ask` accepts no session and returns none, so no caller can be
+   * continuing a conversation. It used to run every request under the shared
+   * key `rag:<agentId>`: `agent.run` appends each turn to that session and
+   * loads it back into the next request's prompt, so one caller's question,
+   * the documents retrieved for it, and the answer were read by the next
+   * caller's model — and were fetchable verbatim by any authenticated client
+   * through the memory endpoint used below.
+   */
+  test("ask does not leave one caller's question where another caller can read it", async () => {
+    const ask = await createHarness();
+    const secret = "zebra-quarterly-margin-9471";
+
+    try {
+      const first = await ask.json<{ answer: string }>(
+        "/v1/knowledge/ask",
+        post({ query: secret, agentId: "assistant" }),
+      );
+      assert.equal(first.status, 200);
+
+      await ask.json("/v1/knowledge/ask", post({ query: "an unrelated follow-up", agentId: "assistant" }));
+
+      const shared = await ask.json<{ messages: { role: string; content: string }[] }>(
+        "/v1/agents/assistant/memory?sessionId=rag:assistant",
+      );
+
+      assert.equal(shared.status, 200);
+      assert.deepEqual(shared.body.messages, [], "the per-agent rag session must never accumulate turns");
+      assert.ok(
+        !JSON.stringify(shared.body).includes(secret),
+        "one caller's question must not be readable through a session another caller can name",
+      );
+
+      /*
+       * The other half of the property: the turns went somewhere, and that
+       * somewhere is different for each request. `MemoryStore.sessions()` is
+       * already part of the store interface, so this reads the real keys the
+       * route generated without the route having to expose them.
+       */
+      const store = ask.container.agents.get("assistant")!.memory;
+      const generated = (await store.sessions()).filter((id) => id.startsWith("rag:assistant:"));
+
+      assert.equal(new Set(generated).size, 2, "two asks must run under two distinct sessions");
+      for (const id of generated) {
+        assert.match(id, /^rag:assistant:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      }
+    } finally {
+      await ask.close();
+    }
+  });
 });
 
 describe("workflows", () => {

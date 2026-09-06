@@ -7,6 +7,7 @@ import {
   type IngestResponse,
   type SearchResponse,
 } from "@bugbaar/api";
+import { randomUUID } from "node:crypto";
 import type { Document } from "@bugbaar/rag";
 import { Router } from "express";
 import { asyncHandler, pathParam } from "../middleware/index.js";
@@ -85,7 +86,18 @@ export function knowledgeRoutes(container: Container): Router {
         ? `${context}\n\nUsing only the reference documents above, answer the question.\nQuestion: ${query}`
         : `No reference documents matched. Answer from general knowledge and say so.\nQuestion: ${query}`;
 
-      const result = await agent.run(prompt, { sessionId: `rag:${agentId}` });
+      /*
+       * A fresh session per request.
+       *
+       * `agent.run` loads the session's history into the prompt and appends
+       * the turn afterwards. A key shared per agent — as `rag:${agentId}` was
+       * — put every caller's question, the documents retrieved for it, and the
+       * answer into one bucket that the next caller's prompt read back, and
+       * that any authenticated client could fetch through the memory endpoint.
+       * This endpoint takes no session and returns none, so nothing legitimate
+       * needs that history to persist.
+       */
+      const result = await agent.run(prompt, { sessionId: `rag:${agentId}:${randomUUID()}` });
 
       res.json({
         answer: result.output,
