@@ -35,6 +35,12 @@ export const calculatorTool: Tool<{ a: number; b: number; operation: string }, n
   },
 };
 
+/** Redirect hops the http tool will follow before giving up. */
+const MAX_REDIRECTS = 5;
+
+/** Statuses that carry a `Location` worth following. 304 and 305 do not. */
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
 export interface HttpToolOptions {
   /** Hostnames the tool is permitted to reach. Empty means "deny everything". */
   allowedHosts: string[];
@@ -50,6 +56,16 @@ export interface HttpToolOptions {
 export function createHttpTool(options: HttpToolOptions): Tool<{ url: string; method?: string }, unknown> {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const allowed = new Set(options.allowedHosts.map((host) => host.toLowerCase()));
+
+  /** The protocol and host gate, applied to the first URL and to every hop after it. */
+  function assertAllowed(target: URL): void {
+    if (target.protocol !== "https:" && target.protocol !== "http:") {
+      throw new Error(`Unsupported protocol "${target.protocol}"`);
+    }
+    if (!allowed.has(target.hostname.toLowerCase())) {
+      throw new Error(`Host "${target.hostname}" is not on the allowlist`);
+    }
+  }
 
   return {
     name: "http_request",
@@ -71,16 +87,45 @@ export function createHttpTool(options: HttpToolOptions): Tool<{ url: string; me
         throw new Error(`"${url}" is not a valid absolute URL`);
       }
 
-      if (target.protocol !== "https:" && target.protocol !== "http:") {
-        throw new Error(`Unsupported protocol "${target.protocol}"`);
-      }
-      if (!allowed.has(target.hostname.toLowerCase())) {
-        throw new Error(`Host "${target.hostname}" is not on the allowlist`);
-      }
+      assertAllowed(target);
 
       const timeout = AbortSignal.timeout(timeoutMs);
       const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
-      const response = await fetch(target, { method, signal });
+
+      /*
+       * Redirects are followed by hand.
+       *
+       * With fetch's default `redirect: "follow"` the allowlist only guards
+       * the first hop: one 302 from an allowed host reaches anything the
+       * network can — cloud metadata, internal services — which is the SSRF
+       * the allowlist exists to prevent. Every hop is validated here, before
+       * its request is made.
+       */
+      let response = await fetch(target, { method, redirect: "manual", signal });
+
+      for (let hop = 0; isRedirect(response); hop += 1) {
+        if (hop >= MAX_REDIRECTS) {
+          throw new Error(`Exceeded ${MAX_REDIRECTS} redirects starting from "${url}"`);
+        }
+
+        // A 3xx without a Location is not a redirect; return it as the result.
+        const location = response.headers.get("location");
+        if (!location) break;
+
+        let next: URL;
+        try {
+          // Resolved against the current hop, so a relative Location lands on
+          // the host that sent it rather than on the original URL.
+          next = new URL(location, target);
+        } catch {
+          throw new Error(`Redirect target "${location}" is not a valid URL`);
+        }
+
+        assertAllowed(next);
+        target = next;
+        response = await fetch(target, { method, redirect: "manual", signal });
+      }
+
       const body = await response.text();
 
       return {
@@ -90,4 +135,8 @@ export function createHttpTool(options: HttpToolOptions): Tool<{ url: string; me
       };
     },
   };
+}
+
+function isRedirect(response: Response): boolean {
+  return REDIRECT_STATUS.has(response.status);
 }
