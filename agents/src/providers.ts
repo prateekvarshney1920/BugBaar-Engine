@@ -1,5 +1,5 @@
 import { CompletionAssembler, SseDecoder } from "./sse.js";
-import type { CompletionChunk, CompletionRequest, CompletionResponse, LlmProvider } from "./types.js";
+import type { CompletionChunk, CompletionRequest, CompletionResponse, LlmProvider, Message } from "./types.js";
 
 /**
  * Zero-dependency provider used by tests, examples, and `LLM_PROVIDER=echo`.
@@ -79,11 +79,7 @@ export class OpenAiProvider implements LlmProvider {
       temperature: request.temperature ?? 0.2,
       max_tokens: request.maxTokens,
       ...(stream ? { stream: true } : {}),
-      messages: request.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-        ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
-      })),
+      messages: request.messages.map(toOpenAiMessage),
       ...(request.tools?.length
         ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })) }
         : {}),
@@ -175,6 +171,31 @@ export class OpenAiProvider implements LlmProvider {
 
     yield { delta: "", done: assembler.finish() };
   }
+}
+
+/**
+ * Maps one transcript message onto the OpenAI chat wire shape.
+ *
+ * The assistant's `toolCalls` have to survive the round trip: OpenAI only
+ * accepts a `role: "tool"` message when the assistant turn before it requested
+ * that exact `tool_call_id`, so dropping them breaks every multi-step run.
+ * Arguments travel as a JSON string, which is how the API returns them too.
+ */
+function toOpenAiMessage(message: Message): Record<string, unknown> {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.toolCalls?.length
+      ? {
+          tool_calls: message.toolCalls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+          })),
+        }
+      : {}),
+    ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+  };
 }
 
 function safeParseArguments(raw: string): Record<string, unknown> {

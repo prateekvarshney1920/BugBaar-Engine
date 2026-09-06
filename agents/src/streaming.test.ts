@@ -3,9 +3,9 @@ import { describe, test } from "node:test";
 import { calculatorTool, ToolRegistry } from "@bugbaar/tools";
 import { Agent } from "./agent.ts";
 import type { AgentEvent } from "./events.ts";
-import { EchoProvider } from "./providers.ts";
+import { EchoProvider, OpenAiProvider } from "./providers.ts";
 import { CompletionAssembler, SseDecoder } from "./sse.ts";
-import type { CompletionChunk, CompletionResponse, LlmProvider } from "./types.ts";
+import type { CompletionChunk, CompletionResponse, LlmProvider, Message } from "./types.ts";
 
 /** Replays a fixed script, with no streaming support at all. */
 class BlockingProvider implements LlmProvider {
@@ -288,5 +288,120 @@ describe("CompletionAssembler", () => {
     assembler.accept(frame({ content: "cut off" }, "length"));
 
     assert.equal(assembler.finish().finishReason, "length");
+  });
+});
+
+/*
+ * `CompletionAssembler` above covers the response half of the OpenAI wire
+ * format; this covers the request half.
+ *
+ * The regression: the assistant's tool calls were dropped when the transcript
+ * was serialized, so the `role: "tool"` messages that follow referenced a
+ * `tool_call_id` no assistant turn had ever requested. The API rejects that,
+ * which breaks every multi-step tool run — and nothing in the agent loop or
+ * the assembler tests can catch it, because the damage happens on the way out.
+ */
+describe("OpenAiProvider request body", () => {
+  interface WireMessage {
+    role: string;
+    content: string;
+    tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
+    tool_call_id?: string;
+  }
+
+  /**
+   * Runs one blocking completion against a stubbed `fetch` and returns the
+   * messages the provider actually put on the wire. No request leaves the
+   * process; the stub is restored even if `complete` throws.
+   */
+  async function sentMessages(messages: Message[]): Promise<WireMessage[]> {
+    const provider = new OpenAiProvider({ apiKey: "test-key" });
+    const realFetch = globalThis.fetch;
+    let captured: unknown;
+
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      captured = init?.body;
+      return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }), {
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      await provider.complete({ messages });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    assert.equal(typeof captured, "string", "the provider must send a serialized body");
+    return (JSON.parse(captured as string) as { messages: WireMessage[] }).messages;
+  }
+
+  // The exact transcript the agent loop builds for a two-call turn.
+  const TRANSCRIPT: Message[] = [
+    { role: "user", content: "6 times 7, and 1 plus 2?" },
+    {
+      role: "assistant",
+      content: "Let me compute both.",
+      toolCalls: [
+        { id: "call_1", name: "calculator", arguments: { a: 6, b: 7, operation: "multiply" } },
+        { id: "call_2", name: "calculator", arguments: { a: 1, b: 2, operation: "add" } },
+      ],
+    },
+    { role: "tool", toolCallId: "call_1", content: "42" },
+    { role: "tool", toolCallId: "call_2", content: "3" },
+  ];
+
+  test("an assistant turn carries its tool calls through in OpenAI's shape", async () => {
+    const wire = await sentMessages(TRANSCRIPT);
+    const assistant = wire[1]!;
+
+    assert.equal(assistant.role, "assistant");
+    assert.equal(assistant.content, "Let me compute both.");
+
+    // Parallel calls survive, in the order the model produced them.
+    assert.equal(assistant.tool_calls?.length, 2);
+    assert.deepEqual(
+      assistant.tool_calls?.map((call) => call.id),
+      ["call_1", "call_2"],
+    );
+
+    const first = assistant.tool_calls[0]!;
+    assert.equal(first.type, "function");
+    assert.equal(first.function.name, "calculator");
+
+    // Arguments go out as a JSON string, which is how the API returns them
+    // too — sending the object would be rejected.
+    assert.equal(typeof first.function.arguments, "string");
+    assert.deepEqual(JSON.parse(first.function.arguments), { a: 6, b: 7, operation: "multiply" });
+    assert.deepEqual(JSON.parse(assistant.tool_calls[1]!.function.arguments), { a: 1, b: 2, operation: "add" });
+  });
+
+  test("each tool result still points back at the call that produced it", async () => {
+    const wire = await sentMessages(TRANSCRIPT);
+    const results = wire.filter((message) => message.role === "tool");
+
+    assert.deepEqual(
+      results.map((message) => message.tool_call_id),
+      ["call_1", "call_2"],
+    );
+    // Every id must be one the assistant turn asked for, or the API 400s.
+    const requested = wire[1]!.tool_calls?.map((call) => call.id);
+    for (const message of results) assert.ok(requested?.includes(message.tool_call_id!));
+  });
+
+  test("a message with no tool calls is sent without a tool_calls field", async () => {
+    const wire = await sentMessages([
+      { role: "system", content: "Be brief." },
+      { role: "user", content: "hello" },
+    ]);
+
+    for (const message of wire) {
+      assert.equal("tool_calls" in message, false);
+      assert.equal("tool_call_id" in message, false);
+    }
+    assert.deepEqual(
+      wire.map((message) => message.role),
+      ["system", "user"],
+    );
   });
 });
