@@ -116,6 +116,86 @@ export function runJobQueueContract(backendName: string, options: QueueContractO
       }
     });
 
+    /*
+     * `EnqueueOptions.jobId` promises idempotent enqueueing, and the two
+     * backends had drifted on it: BullMQ's add script returns the existing job
+     * when the id is already present, while the in-memory queue echoed the id
+     * back and scheduled a second timer. A duplicate POST to
+     * /v1/workflows/:name/enqueue therefore ran the workflow twice locally and
+     * once against Redis.
+     */
+    test("the same jobId enqueued twice runs the workflow once", skip(), async () => {
+      let calls = 0;
+      const queue = await options.createQueue(async (workflow) => {
+        calls += 1;
+        return makeRun(workflow);
+      });
+
+      try {
+        // Delayed so both submissions land before the first one starts, which
+        // is what a duplicated request looks like.
+        const first = await queue.enqueue("idempotent", {}, { jobId: "same-id", delayMs: 150 });
+        const second = await queue.enqueue("idempotent", {}, { jobId: "same-id", delayMs: 150 });
+
+        assert.equal(second, first, "a duplicate enqueue must report the original job id");
+
+        await eventually(
+          () => calls >= 1,
+          retryTimeout,
+          () => "the job never ran",
+        );
+        // Give a second execution time to appear, if one was queued.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        assert.equal(calls, 1, `the workflow ran ${calls} times for one logical job`);
+      } finally {
+        await queue.close();
+      }
+    });
+
+    // The other half: deduplication must not swallow unrelated work.
+    test("jobs without an explicit id are independent", skip(), async () => {
+      let calls = 0;
+      const queue = await options.createQueue(async (workflow) => {
+        calls += 1;
+        return makeRun(workflow);
+      });
+
+      try {
+        const first = await queue.enqueue("independent", {}, {});
+        const second = await queue.enqueue("independent", {}, {});
+
+        assert.notEqual(second, first, "generated ids must be unique per enqueue");
+        await eventually(
+          () => calls >= 2,
+          retryTimeout,
+          () => `saw ${calls} run(s), expected 2`,
+        );
+      } finally {
+        await queue.close();
+      }
+    });
+
+    // A retry is the same job, so holding the id must not cancel it.
+    test("a job with an explicit id still retries", skip(), async () => {
+      let calls = 0;
+      const queue = await options.createQueue(async () => {
+        calls += 1;
+        throw new Error("transient");
+      });
+
+      try {
+        await queue.enqueue("flaky-keyed", {}, { jobId: "retry-id", attempts: 3 });
+        await eventually(
+          () => calls >= 3,
+          retryTimeout * 3,
+          () => `saw ${calls} attempt(s), expected 3`,
+        );
+      } finally {
+        await queue.close();
+      }
+    });
+
     test("stops retrying once attempts are exhausted", skip(), async () => {
       let calls = 0;
       const queue = await options.createQueue(async () => {

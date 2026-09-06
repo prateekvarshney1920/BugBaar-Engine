@@ -12,7 +12,12 @@ export interface EnqueueOptions {
    * mid-run.
    */
   attempts?: number;
-  /** Supply your own id to make enqueueing idempotent. */
+  /**
+   * Supply your own id to make enqueueing idempotent.
+   *
+   * A second enqueue with an id whose job is still in flight is ignored and
+   * returns the same id, rather than running the workflow again.
+   */
   jobId?: string;
 }
 
@@ -69,6 +74,8 @@ export class InMemoryJobQueue implements JobQueue {
   readonly #pending = new Set<NodeJS.Timeout>();
   readonly #jobs = new Map<string, ScheduledJob>();
   readonly #running = new Set<string>();
+  /** Caller-supplied ids with a job still in flight, so `enqueue` is idempotent. */
+  readonly #queued = new Set<string>();
   readonly #options: InMemoryJobQueueOptions;
   #sequence = 0;
   #closed = false;
@@ -79,6 +86,22 @@ export class InMemoryJobQueue implements JobQueue {
 
   async enqueue(workflow: string, input: Record<string, unknown>, options: EnqueueOptions = {}): Promise<string> {
     const id = options.jobId ?? `job-${++this.#sequence}`;
+
+    /*
+     * Only a caller-supplied id is deduplicated, which is what BullMQ does:
+     * its add script skips the write when the job hash already exists, but
+     * only for an explicit id. A generated id is unique by construction, so
+     * every one of those calls is a genuinely separate job.
+     *
+     * `#running` is not enough on its own — it drops a tick that arrives
+     * mid-run, so a second timer firing after the first run finished would
+     * execute the workflow a second time.
+     */
+    if (options.jobId) {
+      if (this.#queued.has(options.jobId)) return id;
+      this.#queued.add(options.jobId);
+    }
+
     this.#later(
       () => void this.#attempt(id, workflow, input, 1, Math.max(1, options.attempts ?? 1)),
       options.delayMs ?? 0,
@@ -130,6 +153,7 @@ export class InMemoryJobQueue implements JobQueue {
     this.#intervals.clear();
     this.#pending.clear();
     this.#jobs.clear();
+    this.#queued.clear();
   }
 
   #later(action: () => void, delayMs: number): void {
@@ -160,6 +184,10 @@ export class InMemoryJobQueue implements JobQueue {
     if (this.#closed || this.#running.has(id)) return;
     this.#running.add(id);
 
+    // The id stays reserved while retries are still pending: a retry is the
+    // same job, so a duplicate enqueue during one must still be suppressed.
+    let retrying = false;
+
     try {
       const run = await this.#options.runner(workflow, input);
       this.#options.onComplete?.(run, id);
@@ -170,6 +198,7 @@ export class InMemoryJobQueue implements JobQueue {
       }
     } catch (error) {
       if (attempt < maxAttempts && !this.#closed) {
+        retrying = true;
         const backoff = 1_000 * 2 ** (attempt - 1);
         this.#later(() => void this.#attempt(id, workflow, input, attempt + 1, maxAttempts), backoff);
       } else {
@@ -177,6 +206,7 @@ export class InMemoryJobQueue implements JobQueue {
       }
     } finally {
       this.#running.delete(id);
+      if (!retrying) this.#queued.delete(id);
     }
   }
 }
