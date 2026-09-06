@@ -38,6 +38,9 @@ export const calculatorTool: Tool<{ a: number; b: number; operation: string }, n
 /** Redirect hops the http tool will follow before giving up. */
 const MAX_REDIRECTS = 5;
 
+/** Bytes of response body the tool will read. Anything past this is dropped. */
+const MAX_BODY_BYTES = 100_000;
+
 /** Statuses that carry a `Location` worth following. 304 and 305 do not. */
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 
@@ -126,12 +129,10 @@ export function createHttpTool(options: HttpToolOptions): Tool<{ url: string; me
         response = await fetch(target, { method, redirect: "manual", signal });
       }
 
-      const body = await response.text();
-
       return {
         status: response.status,
         contentType: response.headers.get("content-type"),
-        body: body.slice(0, 100_000),
+        body: await readCappedBody(response),
       };
     },
   };
@@ -139,4 +140,51 @@ export function createHttpTool(options: HttpToolOptions): Tool<{ url: string; me
 
 function isRedirect(response: Response): boolean {
   return REDIRECT_STATUS.has(response.status);
+}
+
+/**
+ * Reads at most `MAX_BODY_BYTES` of the body and stops there.
+ *
+ * `response.text()` buffers the whole body and only then truncates, so a large
+ * or hostile response allocates without bound before the cap can apply — an
+ * agent told to fetch a multi-gigabyte file would take the process down.
+ * Pulling from the stream keeps the ceiling at the limit plus one chunk, and
+ * cancelling releases the socket rather than draining the rest of the body.
+ *
+ * The cap counts bytes, not characters, because bytes are what memory is
+ * measured in. For ASCII the two are the same.
+ */
+async function readCappedBody(response: Response): Promise<string> {
+  // HEAD responses and 204s have no body at all.
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (total < MAX_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    // Cancel rather than release: an oversized body should stop arriving.
+    await reader.cancel().catch(() => undefined);
+  }
+
+  const size = Math.min(total, MAX_BODY_BYTES);
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= size) break;
+    const fits = chunk.subarray(0, size - offset);
+    bytes.set(fits, offset);
+    offset += fits.length;
+  }
+
+  // A cut through a multi-byte character decodes to U+FFFD instead of
+  // throwing, which is what truncation should do.
+  return new TextDecoder().decode(bytes);
 }
