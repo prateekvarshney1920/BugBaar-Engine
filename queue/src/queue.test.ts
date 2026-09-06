@@ -4,6 +4,7 @@ import type { WorkflowRun } from "@bugbaar/workflows";
 import { Redis } from "ioredis";
 import { runJobQueueContract } from "@bugbaar/workflows";
 import { BullJobQueue } from "./bull-queue.ts";
+import { createQueue } from "./bootstrap.ts";
 import { createRedisClient, pingRedis, toRedisOptions, waitForRedis } from "./connection.ts";
 import { RedisRateLimiter } from "./rate-limit.ts";
 import { createWorkflowWorker } from "./worker.ts";
@@ -325,5 +326,115 @@ describe("connection helpers", () => {
 
     await assert.rejects(() => waitForRedis(dead, 1_000));
     dead.disconnect();
+  });
+});
+
+/*
+ * BullMQ namespacing.
+ *
+ * `keyPrefix` used to reach only the rate limiter's ioredis client; the Queue
+ * and Worker were built without it, so two environments sharing one Redis both
+ * landed on BullMQ's default `bull` namespace and a worker could claim the
+ * other environment's jobs. The prefix now goes to BullMQ's own `prefix`
+ * option — it cannot ride on the connection, because BullMQ throws on an
+ * ioredis-prefixed client.
+ */
+describe("BullMQ key namespace", () => {
+  test("a job is only visible to a worker on the same prefix", skip(), async () => {
+    const seenByA: string[] = [];
+    const seenByB: string[] = [];
+
+    const queueA = new BullJobQueue({ connection: redisOptions, queueName: "ns-isolated", prefix: "ns-a" });
+    const workerA = createWorkflowWorker({
+      connection: redisOptions,
+      queueName: "ns-isolated",
+      prefix: "ns-a",
+      runner: async (workflow) => {
+        seenByA.push(workflow);
+        return makeRun(workflow);
+      },
+    });
+    const workerB = createWorkflowWorker({
+      connection: redisOptions,
+      queueName: "ns-isolated",
+      prefix: "ns-b",
+      runner: async (workflow) => {
+        seenByB.push(workflow);
+        return makeRun(workflow);
+      },
+    });
+
+    try {
+      await queueA.enqueue("only-for-a", {});
+      await eventually(() => seenByA.includes("only-for-a"));
+
+      // The other environment's worker had the same chance and must have had
+      // nothing to claim.
+      assert.deepEqual(seenByB, [], "a worker must not consume another namespace's jobs");
+    } finally {
+      await workerA.close();
+      await workerB.close();
+      await queueA.close();
+    }
+  });
+
+  test("the prefix reaches Redis, not just the constructor", skip(), async () => {
+    const queue = new BullJobQueue({ connection: redisOptions, queueName: "ns-keys", prefix: "ns-real" });
+
+    try {
+      // enqueue() resolves once Redis has the job, so the keys exist already.
+      await queue.enqueue("keyed", {});
+
+      const namespaced = await connection.keys("ns-real:ns-keys:*");
+      const defaulted = await connection.keys("bull:ns-keys:*");
+
+      assert.ok(namespaced.length > 0, "BullMQ keys must live under the configured prefix");
+      assert.deepEqual(defaulted, [], "and nothing may be written to the default namespace");
+    } finally {
+      await queue.close();
+    }
+  });
+
+  test("no prefix leaves BullMQ's default namespace untouched", skip(), async () => {
+    const queue = new BullJobQueue({ connection: redisOptions, queueName: "ns-default" });
+
+    try {
+      await queue.enqueue("plain", {});
+
+      // Not "undefined:ns-default:*": an explicit undefined would overwrite
+      // the default BullMQ applies with Object.assign.
+      assert.ok((await connection.keys("bull:ns-default:*")).length > 0, "the default namespace is preserved");
+      assert.deepEqual(await connection.keys("undefined:*"), [], "and no undefined prefix leaks into keys");
+    } finally {
+      await queue.close();
+    }
+  });
+
+  test("createQueue propagates keyPrefix into the queue and worker", skip(), async () => {
+    const executed: string[] = [];
+
+    const layer = await createQueue({
+      url: REDIS_URL,
+      queueName: "ns-bootstrap",
+      keyPrefix: "ns-boot",
+      rateLimit: { windowMs: 10_000, max: 5 },
+      runner: async (workflow) => {
+        executed.push(workflow);
+        return makeRun(workflow);
+      },
+    });
+
+    try {
+      await layer.queue.enqueue("wired", {});
+      await eventually(() => executed.includes("wired"));
+
+      const namespaced = await connection.keys("ns-boot:ns-bootstrap:*");
+      const defaulted = await connection.keys("bull:ns-bootstrap:*");
+
+      assert.ok(namespaced.length > 0, "createQueue must namespace BullMQ, not only the rate limiter");
+      assert.deepEqual(defaulted, [], "and must not fall back to the default namespace");
+    } finally {
+      await layer.close();
+    }
   });
 });

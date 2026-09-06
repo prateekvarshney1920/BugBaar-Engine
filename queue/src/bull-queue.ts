@@ -6,6 +6,14 @@ export interface BullJobQueueOptions {
   /** Connection options, not a client: BullMQ must own what it opens. */
   connection: RedisOptions;
   queueName?: string;
+  /**
+   * BullMQ key namespace. Defaults to BullMQ's own `bull`.
+   *
+   * This is BullMQ's `prefix`, not ioredis's `keyPrefix` — BullMQ builds its
+   * keys inside Lua and throws outright if the client carries an ioredis
+   * prefix.
+   */
+  prefix?: string;
   /** Completed jobs retained before BullMQ trims them. */
   keepCompleted?: number;
   keepFailed?: number;
@@ -21,8 +29,8 @@ export const WORKFLOW_JOB_NAME = "workflow";
 
 /**
  * BullMQ reserves ":" as its Redis key separator and rejects it in a queue
- * name, so this is deliberately hyphenated. Use `keyPrefix` on the connection
- * to namespace environments instead.
+ * name, so this is deliberately hyphenated. To namespace environments that
+ * share one Redis, set the `prefix` option — BullMQ's own, not ioredis's.
  */
 export const DEFAULT_QUEUE_NAME = "bugbaar-workflows";
 
@@ -43,6 +51,9 @@ export class BullJobQueue implements JobQueue {
     this.#defaultAttempts = options.defaultAttempts ?? 3;
     this.#queue = new Queue<WorkflowJobData>(options.queueName ?? DEFAULT_QUEUE_NAME, {
       connection: options.connection,
+      // Spread rather than pass undefined: BullMQ applies its "bull" default
+      // with Object.assign, which an explicit undefined would overwrite.
+      ...(options.prefix ? { prefix: options.prefix } : {}),
       defaultJobOptions: {
         // Bound history so a busy queue cannot fill Redis; the durable record
         // of what happened lives in MongoDB, not here.

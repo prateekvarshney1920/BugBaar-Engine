@@ -28,7 +28,14 @@ export function toRedisOptions(url: string): RedisOptions {
 
 export interface RedisConnectionOptions {
   url: string;
-  /** Prefix applied to every key, so one Redis can host several environments. */
+  /**
+   * Namespace for one environment sharing a Redis instance.
+   *
+   * It reaches the two subsystems by different routes: this client passes it
+   * to ioredis as `keyPrefix`, which covers the rate limiter, while BullMQ
+   * takes it as its own `prefix` option. BullMQ builds keys inside Lua and
+   * throws on an ioredis-prefixed client, so it can never travel that way.
+   */
   keyPrefix?: string;
   onLog?: (message: string, data?: Record<string, unknown>) => void;
 }

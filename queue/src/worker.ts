@@ -8,6 +8,8 @@ export interface WorkflowWorkerOptions {
   connection: RedisOptions;
   runner: WorkflowRunner;
   queueName?: string;
+  /** BullMQ key namespace. Must match the queue's, or no job is ever seen. */
+  prefix?: string;
   /** Jobs processed simultaneously by this worker. */
   concurrency?: number;
   onComplete?: (run: WorkflowRun, jobId: string) => void;
@@ -38,6 +40,8 @@ export function createWorkflowWorker(options: WorkflowWorkerOptions): Worker<Wor
     },
     {
       connection: options.connection,
+      // Spread rather than pass undefined, as in BullJobQueue.
+      ...(options.prefix ? { prefix: options.prefix } : {}),
       concurrency: options.concurrency ?? 4,
     },
   );

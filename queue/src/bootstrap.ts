@@ -41,7 +41,13 @@ export async function createQueue(options: CreateQueueOptions): Promise<QueueLay
   await waitForRedis(connection, options.connectTimeoutMs);
 
   const redisOptions = toRedisOptions(options.url);
-  const queue = new BullJobQueue({ connection: redisOptions, queueName: options.queueName });
+  // keyPrefix reaches BullMQ as its own `prefix`. It cannot go on the
+  // connection: BullMQ rejects an ioredis-prefixed client.
+  const queue = new BullJobQueue({
+    connection: redisOptions,
+    queueName: options.queueName,
+    prefix: options.keyPrefix,
+  });
   const rateLimiter = new RedisRateLimiter({
     connection,
     windowMs: options.rateLimit.windowMs,
@@ -55,6 +61,7 @@ export async function createQueue(options: CreateQueueOptions): Promise<QueueLay
       connection: redisOptions,
       runner: options.runner,
       queueName: options.queueName,
+      prefix: options.keyPrefix,
       concurrency: options.concurrency,
       onComplete: options.onRun,
       onFailed: options.onError,
